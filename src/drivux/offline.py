@@ -11,26 +11,26 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .config import config_home
+from .config import DEFAULT_ACCOUNT, config_home
 
 CHUNK = 1024 * 1024
 
 
-def list_path() -> Path:
-    return config_home() / "drivux" / "offline.json"
+def list_path(name: str = DEFAULT_ACCOUNT) -> Path:
+    return config_home() / "drivux" / ("offline.json" if name == DEFAULT_ACCOUNT else f"offline-{name}.json")
 
 
-def load() -> list[str]:
-    """Paths kept offline, relative to the Drive folder."""
+def load(name: str = DEFAULT_ACCOUNT) -> list[str]:
+    """Paths kept offline, relative to the Drive folder of the account."""
     try:
-        data = json.loads(list_path().read_text())
+        data = json.loads(list_path(name).read_text())
     except (FileNotFoundError, json.JSONDecodeError):
         return []
     return [item for item in data if isinstance(item, str)]
 
 
-def save(items: list[str]) -> None:
-    path = list_path()
+def save(items: list[str], name: str = DEFAULT_ACCOUNT) -> None:
+    path = list_path(name)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(sorted(items), indent=2) + "\n")
 

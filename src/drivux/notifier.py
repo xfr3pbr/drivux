@@ -35,11 +35,13 @@ def read_activity(socket: Path) -> Activity | None:
     return Activity(uploads, downloads, stats.get("errors", 0), stats.get("lastError", ""))
 
 
-def describe(act: Activity) -> tuple[str, str]:
+def describe(act: Activity, label: str = "") -> tuple[str, str]:
     """Title and body of the progress notification."""
     names = [f"↑ {Path(n).name}" for n in act.uploads] + [f"↓ {Path(n).name}" for n in act.downloads]
     total = len(names)
     title = f"Syncing {total} file{'s' if total > 1 else ''}"
+    if label:
+        title += f" ({label})"
     body = "\n".join(names[:MAX_LISTED])
     if total > MAX_LISTED:
         body += f"\nand {total - MAX_LISTED} more"
@@ -49,13 +51,17 @@ def describe(act: Activity) -> tuple[str, str]:
 class Notifier:
     """Decide when to show, update and close notifications."""
 
-    def __init__(self, send):
+    def __init__(self, send, label: str = ""):
         # send(title, body, *, replaces, persistent, critical) -> notification id
         self.send = send
+        self.label = label  # account name, when there is more than one
         self.progress_id = 0
         self.last_shown: tuple[str, str] | None = None
         self.busy_ticks = 0
         self.errors_seen: int | None = None
+
+    def titled(self, title: str) -> str:
+        return f"{title} ({self.label})" if self.label else title
 
     def update(self, act: Activity | None) -> None:
         if act is None:
@@ -66,13 +72,13 @@ class Notifier:
             self.errors_seen = act.errors  # ignore errors from before Drivux started
         elif act.errors > self.errors_seen:
             self.errors_seen = act.errors
-            self.send("Sync error", act.last_error or "See the Drivux log.", critical=True)
+            self.send(self.titled("Sync error"), act.last_error or "See the Drivux log.", critical=True)
 
         if act.uploads or act.downloads:
             self.busy_ticks += 1
             if self.busy_ticks < BUSY_TICKS_BEFORE_NOTIFY:
                 return
-            message = describe(act)
+            message = describe(act, self.label)
             if message != self.last_shown:
                 self.progress_id = self.send(*message, replaces=self.progress_id, persistent=True)
                 self.last_shown = message
@@ -80,7 +86,7 @@ class Notifier:
 
         self.busy_ticks = 0
         if self.last_shown:
-            self.send("Everything is synced", "Your files are up to date with Google Drive.", replaces=self.progress_id)
+            self.send(self.titled("Everything is synced"), "Your files are up to date with Google Drive.", replaces=self.progress_id)
             self.progress_id = 0
             self.last_shown = None
 
@@ -118,8 +124,8 @@ def dbus_sender():
     return send
 
 
-def run(socket: Path) -> None:
-    notifier = Notifier(dbus_sender())
+def run(socket: Path, label: str = "") -> None:
+    notifier = Notifier(dbus_sender(), label)
     while True:
         notifier.update(read_activity(socket))
         time.sleep(POLL_SECONDS)

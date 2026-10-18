@@ -22,7 +22,14 @@ and the user experience.
   folder now and keeps it in the cache, even when you do not open it for weeks.
 - **Instant folders** (optional, `drivux fast on`): the list of your files is kept on disk, so the
   folder is complete the moment the computer starts, even offline. See below.
-- Command line: `drivux setup | status | start | stop | remove | notify | offline | fast`.
+- **Several Google accounts** (`drivux account add work`): each one has its own folder
+  (`~/GoogleDrive-work`), cache, services and offline list. The window has an account selector.
+- **Tray icon** with the sync status: synced, syncing (hover to see the files going up and down),
+  paused or error. The menu opens the folders and pauses or resumes the sync. It uses the
+  StatusNotifierItem standard (KDE, Waybar, Quickshell, GNOME with the AppIndicator extension);
+  `drivux tray-icon off` turns it off.
+- Command line: `drivux setup | account | status | start | stop | remove | notify | tray | offline | fast`.
+  Commands that act on an account take `--account NAME`; without it they act on all accounts.
 
 ## Installation
 
@@ -124,6 +131,8 @@ make test
 | Drivux settings | `~/.config/drivux/config.json` |
 | Service that mounts the folder | `~/.config/systemd/user/drivux.service` |
 | Notification service | `~/.config/systemd/user/drivux-notify.service` |
+| Tray icon service | `~/.config/systemd/user/drivux-tray.service` |
+| Other accounts (name `work`) | remote `drivux-work:`, units `drivux@work.service` (and `drivux-front@work`, `drivux-notify@work`, `drivux-offline@work`), `~/.cache/drivux-work/`, `~/.config/drivux/offline-work.json` |
 | Instant folders: service and the file list | `~/.config/systemd/user/drivux-front.service`, `~/.cache/drivux/index.sqlite3` |
 | Files kept offline, and the daily timer that refreshes them | `~/.config/drivux/offline.json`, `~/.config/systemd/user/drivux-offline.{service,timer}` |
 | Cache of opened files, and log | `~/.cache/drivux/` |
@@ -150,7 +159,8 @@ Disconnecting removes the services, the cache and the account access.
 - [ ] Wizard to create your own Google Cloud client ID
 - [ ] Status icons on files (cloud / available offline) in Nautilus
 - [x] "Keep offline" from the right-click menu (Nautilus)
-- [ ] Tray icon with progress and error alerts
+- [x] Tray icon with the sync status, progress and error alerts
+- [x] Several Google accounts
 - [x] Persist the folder list to disk so it is instant right after boot (`drivux fast on`)
 - [ ] Follow the Drive change feed (about 10 s) instead of rescanning every 5 minutes
 - [x] .deb, .rpm and Arch packages, install-tested in CI on Ubuntu, Debian, Fedora and Arch

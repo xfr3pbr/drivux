@@ -20,16 +20,23 @@ def _config_dir() -> Path:
     return Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "drivux"
 
 
-def _drive_folder() -> Path | None:
+def _accounts() -> list[tuple[str, Path]]:
+    """(name, Drive folder) of each connected account."""
     try:
-        return Path(json.loads((_config_dir() / "config.json").read_text())["folder"])
-    except (OSError, ValueError, KeyError):
-        return None
+        data = json.loads((_config_dir() / "config.json").read_text())
+    except (OSError, ValueError):
+        return []
+    items = data["accounts"] if isinstance(data, dict) and "accounts" in data else [data]  # older: one account
+    try:
+        return [(item.get("name", "default"), Path(item["folder"])) for item in items]
+    except (AttributeError, KeyError, TypeError):
+        return []
 
 
-def _kept() -> list[str]:
+def _kept(name: str) -> list[str]:
+    path = _config_dir() / ("offline.json" if name == "default" else f"offline-{name}.json")
     try:
-        return [item for item in json.loads((_config_dir() / "offline.json").read_text()) if isinstance(item, str)]
+        return [item for item in json.loads(path.read_text()) if isinstance(item, str)]
     except (OSError, ValueError):
         return []
 
@@ -40,7 +47,7 @@ def _is_kept(kept: list[str], rel: str) -> bool:
 
 class DrivuxOfflineAction(GObject.GObject, Nautilus.MenuProvider):
     def _relative_paths(self, files, folder: Path) -> list[tuple[str, str]]:
-        """(absolute path, path inside the Drive folder) of each selected item."""
+        """(absolute path, path inside the Drive folder) of each selected item; empty if any is outside it."""
         paths = []
         for file in files:
             location = file.get_location()
@@ -64,14 +71,16 @@ class DrivuxOfflineAction(GObject.GObject, Nautilus.MenuProvider):
     def get_file_items(self, *args):
         # nautilus-python passes (files) or (window, files) depending on the version.
         files = args[0] if len(args) == 1 else args[1]
-        folder = _drive_folder()
-        if not folder or not files:
+        if not files:
             return []
-        selected = self._relative_paths(files, folder)
-        if not selected:
+        for name, folder in _accounts():  # the selection must be inside one account's folder
+            selected = self._relative_paths(files, folder)
+            if selected:
+                break
+        else:
             return []
 
-        kept = _kept()
+        kept = _kept(name)
         if all(_is_kept(kept, rel) for _, rel in selected):
             label, action = "Remove offline copy", "remove"
             # a file kept through its folder can only be removed together with the folder

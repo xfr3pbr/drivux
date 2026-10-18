@@ -73,7 +73,10 @@ def problems() -> list[str]:
 
 
 def _run(args: list[str], timeout: float | None = None) -> str:
-    proc = subprocess.run(["rclone", *args], capture_output=True, text=True, timeout=timeout)
+    try:
+        proc = subprocess.run(["rclone", *args], capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:  # a mount busy loading its folders can leave rc unanswered
+        raise RcloneError(f"rclone {args[0]} did not answer in {timeout:g} s") from None
     if proc.returncode != 0:
         lines = [line for line in proc.stderr.splitlines() if "client_id" not in line]
         raise RcloneError("\n".join(lines).strip() or f"rclone {args[0]} failed")

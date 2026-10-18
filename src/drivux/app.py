@@ -1,6 +1,7 @@
 """Drivux GTK4/libadwaita user interface."""
 
 import threading
+import time
 from pathlib import Path
 
 import gi
@@ -61,6 +62,8 @@ class DrivuxWindow(Adw.ApplicationWindow):
     def __init__(self, app: Adw.Application):
         super().__init__(application=app, title="Drivux", default_width=480, default_height=680)
         self.folder = config.DEFAULT_FOLDER
+        self.cfg = None
+        self.accounts: list[config.Config] = []
         self._updating = False
         self._status_busy = False
 
@@ -105,6 +108,9 @@ class DrivuxWindow(Adw.ApplicationWindow):
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24)
 
         group = Adw.PreferencesGroup()
+        self.name_row = Adw.EntryRow(title="Account name", text=config.DEFAULT_ACCOUNT)
+        self.name_row.connect("changed", self._on_name_changed)
+        group.add(self.name_row)
         self.folder_row = Adw.ActionRow(title="Folder", subtitle=str(self.folder))
         choose = Gtk.Button(label="Choose", valign=Gtk.Align.CENTER)
         choose.connect("clicked", self._on_choose_folder)
@@ -129,6 +135,9 @@ class DrivuxWindow(Adw.ApplicationWindow):
         )
         connect.connect("clicked", self._on_connect)
         box.append(connect)
+        self.back_button = Gtk.Button(label="Back", halign=Gtk.Align.CENTER, css_classes=["flat"])
+        self.back_button.connect("clicked", lambda _b: self.show_initial_page())
+        box.append(self.back_button)
 
         page.set_child(Adw.Clamp(child=box, maximum_size=420))
         return page
@@ -163,6 +172,15 @@ class DrivuxWindow(Adw.ApplicationWindow):
             header.append(widget)
         box.append(header)
 
+        self.account_group = Adw.PreferencesGroup(title="Account")
+        self.account_row = Adw.ComboRow(title="Google account")
+        self.account_row.connect("notify::selected", self._on_account_selected)
+        add_account = Gtk.Button(label="Add account", valign=Gtk.Align.CENTER)
+        add_account.connect("clicked", lambda _b: self.show_setup())
+        self.account_row.add_suffix(add_account)
+        self.account_group.add(self.account_row)
+        box.append(self.account_group)
+
         space = Adw.PreferencesGroup(title="Storage")
         self.cloud_row, self.cloud_bar = usage_row("Google Drive")
         self.cloud_row.set_subtitle("Calculating…")
@@ -178,10 +196,15 @@ class DrivuxWindow(Adw.ApplicationWindow):
         self.startup_row.connect("notify::active", self._on_startup_toggled)
         self.notify_row = Adw.SwitchRow(title="Notifications", subtitle="Show what is still syncing")
         self.notify_row.connect("notify::active", self._on_notify_toggled)
+        self.tray_row = Adw.SwitchRow(title="Tray icon", subtitle="Show the sync status next to the clock")
+        self.tray_row.connect("notify::active", self._on_tray_toggled)
+        self.index_row = Adw.ActionRow(title="Folder list")
         self.main_folder_row = Adw.ActionRow(title="Folder")
         prefs.add(self.connected_row)
         prefs.add(self.startup_row)
         prefs.add(self.notify_row)
+        prefs.add(self.tray_row)
+        prefs.add(self.index_row)
         prefs.add(self.main_folder_row)
         box.append(prefs)
 
@@ -204,24 +227,56 @@ class DrivuxWindow(Adw.ApplicationWindow):
             self.deps_page.set_description("\n\n".join(issues) + "\n\nThen click Check again.")
             self.stack.set_visible_child_name("deps")
             return
-        cfg = config.load()
-        if cfg and service.unit_path().exists():
-            self.show_main(cfg)
+        self.accounts = [cfg for cfg in config.load_all() if service.unit_path(service.unit_name("folder", cfg.name)).exists()]
+        if self.accounts:
+            self.show_main(self.cfg if self.cfg in self.accounts else self.accounts[0])
         else:
-            self.stack.set_visible_child_name("setup")
+            self.show_setup()
+
+    def show_setup(self) -> None:
+        taken = {cfg.name for cfg in config.load_all()}
+        name = config.DEFAULT_ACCOUNT
+        number = 1
+        while name in taken:  # suggest work, then account2, account3...
+            number += 1
+            name = "work" if number == 2 else f"account{number}"
+        self.name_row.set_text(name)
+        self.back_button.set_visible(bool(self.accounts))
+        self.stack.set_visible_child_name("setup")
 
     def show_main(self, cfg: config.Config) -> None:
         self.cfg = cfg
+        self._updating = True
+        names = Gtk.StringList()
+        for account in self.accounts:
+            names.append(f"{account.name} · {account.folder}" if len(self.accounts) > 1 else str(account.folder))
+        self.account_row.set_model(names)
+        self.account_row.set_selected(next(i for i, a in enumerate(self.accounts) if a.name == cfg.name))
+        self._updating = False
         self.cache_max = parse_size(cfg.cache_max_size)
         self.main_folder_row.set_subtitle(str(cfg.folder))
+        self.cloud_row.set_subtitle("Calculating…")
         self.stack.set_visible_child_name("main")
         self._refresh_quota()
         self._tick()
+
+    def _on_account_selected(self, row, _pspec) -> None:
+        if self._updating or not self.accounts:
+            return
+        selected = row.get_selected()
+        if 0 <= selected < len(self.accounts) and self.accounts[selected].name != self.cfg.name:
+            self.show_main(self.accounts[selected])
 
     def toast(self, message: str) -> None:
         self.toasts.add_toast(Adw.Toast(title=message, timeout=6))
 
     # Setup
+
+    def _on_name_changed(self, row) -> None:
+        name = row.get_text().strip()
+        if config.NAME_PATTERN.fullmatch(name):
+            self.folder = config.default_folder(name)
+            self.folder_row.set_subtitle(str(self.folder))
 
     def _on_choose_folder(self, _button) -> None:
         dialog = Gtk.FileDialog(title="Google Drive folder", initial_folder=Gio.File.new_for_path(str(Path.home())))
@@ -237,13 +292,18 @@ class DrivuxWindow(Adw.ApplicationWindow):
 
     def _on_connect(self, _button) -> None:
         folder = self.folder
+        name = self.name_row.get_text().strip()
         client_id = self.client_id_row.get_text().strip()
         client_secret = self.client_secret_row.get_text().strip()
 
         def work() -> config.Config:
+            config.check_name(name)
+            if config.load(name):
+                raise ValueError(f"The account {name} is already connected.")
             service.check_folder(folder)
-            rclone.create_remote(rclone.REMOTE, client_id, client_secret)
-            cfg = config.Config(remote=rclone.REMOTE, folder=folder)
+            remote = config.default_remote(name)
+            rclone.create_remote(remote, client_id, client_secret)
+            cfg = config.Config(remote=remote, folder=folder, name=name)
             config.save(cfg)
             service.install(cfg)
             return cfg
@@ -256,6 +316,7 @@ class DrivuxWindow(Adw.ApplicationWindow):
             self.stack.set_visible_child_name("setup")
             self.toast(f"Could not connect: {error}")
             return
+        self.accounts = [*self.accounts, cfg]
         self.show_main(cfg)
         self.toast("Google Drive connected")
 
@@ -264,12 +325,13 @@ class DrivuxWindow(Adw.ApplicationWindow):
     def _tick(self) -> bool:
         if self.stack.get_visible_child_name() == "main" and not self._status_busy:
             self._status_busy = True
-            run_in_thread(service.status, self._show_status)
+            name = self.cfg.name
+            run_in_thread(lambda: service.status(name), self._show_status)
         return GLib.SOURCE_CONTINUE
 
     def _show_status(self, st: service.Status, error) -> None:
         self._status_busy = False
-        if error:
+        if error or st.name != self.cfg.name:
             return
         pending = st.uploading + st.queued
         if not st.active:
@@ -281,6 +343,8 @@ class DrivuxWindow(Adw.ApplicationWindow):
             text, icon = "Your changes are going up to Drive.", "folder-remote-symbolic"
         else:
             title, text, icon = "Everything is synced", "Files open on demand.", "object-select-symbolic"
+        if st.active and st.fast_listing and st.last_scan:
+            text += f" Checked Drive {self._ago(st.last_scan)}."
         self.state_title.set_label(title)
         self.state_text.set_label(text)
         self.state_icon.set_from_icon_name(icon)
@@ -289,16 +353,28 @@ class DrivuxWindow(Adw.ApplicationWindow):
         self.connected_row.set_active(st.active)
         self.startup_row.set_active(st.enabled)
         self.notify_row.set_active(st.notifications)
+        self.tray_row.set_active(service.is_enabled(service.TRAY_UNIT_NAME))
         self._updating = False
+        self.index_row.set_subtitle(
+            f"Instant, kept on this computer · {st.items:,} items" if st.fast_listing else "Read from Google Drive each time"
+        )
 
         self.local_bar.set_value(min(st.cache_used / self.cache_max, 1))
         self.local_row.set_subtitle(
             f"{format_size(st.cache_used)} of {format_size(self.cache_max)} · recently opened files"
         )
 
+    @staticmethod
+    def _ago(moment: float) -> str:
+        seconds = max(0, int(time.time() - moment))
+        if seconds < 60:
+            return "just now"
+        return f"{seconds // 60} min ago" if seconds < 3600 else f"{seconds // 3600} h ago"
+
     def _refresh_quota(self) -> bool:
         if self.stack.get_visible_child_name() == "main":
-            run_in_thread(lambda: rclone.about(self.cfg.remote), self._show_quota)
+            remote = self.cfg.remote
+            run_in_thread(lambda: rclone.about(remote), self._show_quota)
         return GLib.SOURCE_CONTINUE
 
     def _show_quota(self, info: dict, error) -> None:
@@ -319,19 +395,26 @@ class DrivuxWindow(Adw.ApplicationWindow):
     def _on_connected_toggled(self, row, _pspec) -> None:
         if self._updating:
             return
-        run_in_thread(service.start if row.get_active() else service.stop, self._on_action_done)
+        name = self.cfg.name
+        run_in_thread(lambda: (service.start if row.get_active() else service.stop)(name), self._on_action_done)
 
     def _on_startup_toggled(self, row, _pspec) -> None:
         if self._updating:
             return
-        enabled = row.get_active()
-        run_in_thread(lambda: service.set_enabled(enabled), self._on_action_done)
+        enabled, name = row.get_active(), self.cfg.name
+        run_in_thread(lambda: service.set_enabled(enabled, name), self._on_action_done)
 
     def _on_notify_toggled(self, row, _pspec) -> None:
         if self._updating:
             return
+        enabled, name = row.get_active(), self.cfg.name
+        run_in_thread(lambda: service.set_notifications(enabled, name), self._on_action_done)
+
+    def _on_tray_toggled(self, row, _pspec) -> None:
+        if self._updating:
+            return
         enabled = row.get_active()
-        run_in_thread(lambda: service.set_notifications(enabled), self._on_action_done)
+        run_in_thread(lambda: service.set_tray(enabled), self._on_action_done)
 
     def _on_action_done(self, _result, error) -> None:
         if error:
@@ -340,7 +423,7 @@ class DrivuxWindow(Adw.ApplicationWindow):
 
     def _on_disconnect(self, _button) -> None:
         dialog = Adw.AlertDialog(
-            heading="Disconnect Google Drive?",
+            heading=f"Disconnect {self.cfg.name if len(self.accounts) > 1 else 'Google Drive'}?",
             body="The folder will stop showing your Drive and the files cached on this "
             "computer will be deleted. Nothing is deleted from Google Drive.",
         )
@@ -353,12 +436,12 @@ class DrivuxWindow(Adw.ApplicationWindow):
     def _on_disconnect_response(self, _dialog, response: str) -> None:
         if response != "disconnect":
             return
-        remote = self.cfg.remote
+        cfg = self.cfg
 
         def work() -> None:
-            service.uninstall()
-            rclone.delete_remote(remote)
-            config.remove()
+            service.uninstall(cfg.name)
+            rclone.delete_remote(cfg.remote)
+            config.remove(cfg.name)
 
         run_in_thread(work, self._on_disconnect_done)
 
@@ -366,7 +449,9 @@ class DrivuxWindow(Adw.ApplicationWindow):
         if error:
             self.toast(f"Error while disconnecting: {error}")
             return
-        self.stack.set_visible_child_name("setup")
+        self.accounts = [cfg for cfg in self.accounts if cfg.name != self.cfg.name]
+        self.cfg = None
+        self.show_initial_page()
         self.toast("Google Drive disconnected")
 
 

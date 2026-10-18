@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from .config import cache_home
+from .config import DEFAULT_ACCOUNT, cache_dir
 
 ROOT = 1
 SCHEMA_VERSION = "1"
@@ -20,8 +20,25 @@ GOOGLE_APPS_PREFIX = "application/vnd.google-apps."
 RECENT_SECONDS = 600
 
 
-def index_path() -> Path:
-    return cache_home() / "drivux" / "index.sqlite3"
+def index_path(name: str = DEFAULT_ACCOUNT) -> Path:
+    return cache_dir(name) / "index.sqlite3"
+
+
+def scan_info(path: Path) -> tuple[float, int] | None:
+    """(time of the last scan, number of items) read without opening the index for writing."""
+    try:
+        db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return None
+    try:
+        row = db.execute("SELECT value FROM meta WHERE key='last_scan'").fetchone()
+        if not row:
+            return None
+        return float(row[0]), db.execute("SELECT COUNT(*) FROM nodes WHERE inode != ?", (ROOT,)).fetchone()[0]
+    except sqlite3.Error:
+        return None
+    finally:
+        db.close()
 
 
 @dataclass(frozen=True)
