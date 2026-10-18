@@ -1,40 +1,75 @@
+<div align="center">
+
 # Drivux
 
-**On-demand Google Drive for Linux, with a simple interface.**
+**Google Drive on Linux, the way it works on Windows and macOS.**<br>
+Your whole Drive in a folder. Files download only when you open them.
 
-Drivux shows all your Google Drive files in a folder on your computer, the way
-Google Drive for desktop does on Windows. Each file is only downloaded when you open it.
-Under the hood it uses [rclone](https://rclone.org); Drivux takes care of the setup
-and the user experience.
+[![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/xfr3pbr/drivux?include_prereleases)](https://github.com/xfr3pbr/drivux/releases)
+[![Stars](https://img.shields.io/github/stars/xfr3pbr/drivux?style=flat)](https://github.com/xfr3pbr/drivux/stargazers)
+[![Last commit](https://img.shields.io/github/last-commit/xfr3pbr/drivux)](https://github.com/xfr3pbr/drivux/commits)
+![Platform: Linux](https://img.shields.io/badge/platform-Linux-lightgrey)
+![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776ab)
+![GTK4 + libadwaita](https://img.shields.io/badge/GTK4-libadwaita-4a86cf)
 
-## Features (v0.1)
+<img src="docs/window.png" alt="The Drivux window: status, storage and preferences" width="420">
 
-- Connects your Google account through the browser, no config files to edit.
-- Mounts Drive in a folder (default: `~/GoogleDrive`) that comes up with the computer.
-- Opened files are cached (up to 10 GB; removed after 30 days without use).
-- At startup it loads the whole folder tree at once, so opening folders is instant afterwards.
-- Local changes upload in ~1 s; changes made on Drive show up in ~10 s.
-- GTK4/libadwaita interface (same look as Baobab) with status, account storage,
-  cache usage, pause, start with the computer and disconnect.
-- Desktop notifications showing what is still syncing (↑ uploading, ↓ downloading),
-  updated in place, plus a separate alert when something fails.
-- **Keep offline** in the Nautilus right-click menu (needs `nautilus-python`): downloads the file or
-  folder now and keeps it in the cache, even when you do not open it for weeks.
-- **Instant folders** (optional, `drivux fast on`): the list of your files is kept on disk, so the
-  folder is complete the moment the computer starts, even offline. See below.
-- **Several Google accounts** (`drivux account add work`): each one has its own folder
-  (`~/GoogleDrive-work`), cache, services and offline list. The window has an account selector.
-- **Tray icon** with the sync status: synced, syncing (hover to see the files going up and down),
-  paused or error. The menu opens the folders and pauses or resumes the sync. It uses the
-  StatusNotifierItem standard (KDE, Waybar, Quickshell, GNOME with the AppIndicator extension);
-  `drivux tray-icon off` turns it off.
-- Command line: `drivux setup | account | status | start | stop | remove | notify | tray | offline | fast`.
-  Commands that act on an account take `--account NAME`; without it they act on all accounts.
+[Install](#install) · [Features](#features) · [Instant folders](#instant-folders) · [Compatibility](#compatibility) · [FAQ](#faq) · [Roadmap](#roadmap)
 
-## Installation
+</div>
+
+---
+
+## Why Drivux
+
+Google never made a Drive client for Linux. The usual answers are a mount that is slow to open folders,
+or a sync tool that copies your **entire** Drive to disk. Drivux gives you the third option:
+
+- **Nothing is copied until you need it.** A 100 GB Drive does not need 100 GB of disk.
+- **Folders open at once**, even right after boot and even offline, because the file list is kept on disk.
+- **No config files.** Sign in with your browser, click Allow, done.
+- Built on [rclone](https://rclone.org), the most trusted cloud-storage tool on Linux.
+
+## Features
+
+| | |
+|---|---|
+| **On-demand files** | See every file; each one is downloaded when you open it and cached (10 GB by default). |
+| **Instant folders** | The list of your files lives in a local database, so folders are complete in ~0.2 s after a restart, with or without internet. |
+| **Keep offline** | Right-click a file or folder in Nautilus and keep it available without internet. |
+| **Several accounts** | Personal, work, school: each account gets its own folder, cache and settings. |
+| **Tray icon** | Synced, syncing, paused or error at a glance. Hover to see which files are going up or down. |
+| **Notifications** | Progress updated in place, and a separate alert when something fails. |
+| **Fast uploads** | Local changes reach Drive in about a second. |
+| **Native look** | GTK4 and libadwaita window with status, storage usage, pause and start-with-the-computer. |
+| **Command line** | Everything the window does, plus `status`, `offline`, `account`... |
+
+## Instant folders
+
+By default rclone forgets the list of your files whenever it restarts, so for a few minutes after
+boot some folders are slow to open. `drivux fast on` fixes that, the way Google Drive for desktop
+does on Windows:
+
+```
+~/GoogleDrive   (Drivux: names come from a database on disk)
+      |  open, read, write, rename, delete
+      v
+rclone mount (hidden)  ->  Google Drive
+```
+
+- Folders and file info are answered from `~/.cache/drivux/index.sqlite3`: ~0.2 s after a restart
+  with 14 thousand files, with or without internet.
+- Everything else goes to rclone, which keeps doing the cache and the uploads.
+- Drivux reads the whole Drive tree in the background every 5 minutes to keep the list current.
+  **Changes made on drive.google.com can take up to 5 minutes to show up** (about 10 s without it).
+- The first time it reads the tree before showing the folder (about a minute).
+- Needs `python-pyfuse3` (Arch) or `python3-pyfuse3` (Debian, Fedora). `drivux fast off` goes back.
+
+## Install
 
 Download the package for your distribution from the
-[Releases](https://github.com/xfr3pbr/drivux/releases) page and install it:
+[Releases](https://github.com/xfr3pbr/drivux/releases) page:
 
 ```bash
 sudo apt install ./drivux_*_all.deb              # Ubuntu, Debian, Mint, Pop!_OS
@@ -42,10 +77,12 @@ sudo dnf install ./drivux-*.noarch.rpm           # Fedora
 sudo pacman -U ./drivux-*-any.pkg.tar.zst        # Arch, Manjaro, EndeavourOS, Omarchy
 ```
 
-Dependencies (rclone, FUSE, GTK, libadwaita) are installed along with it. Then open
-**Drivux** from your applications menu.
+Dependencies (rclone, FUSE, GTK, libadwaita) come along. Then open **Drivux** from your applications menu.
 
-On other distributions with systemd, install the dependencies (table below) and run:
+<details>
+<summary>Other distributions with systemd</summary>
+
+Install the [dependencies](#compatibility) and run:
 
 ```bash
 git clone https://github.com/xfr3pbr/drivux && cd drivux
@@ -53,6 +90,35 @@ sudo make install PREFIX=/usr
 ```
 
 Packaging details, and why there is no Flatpak/AppImage: [packaging/README.md](packaging/README.md).
+</details>
+
+## Quick start
+
+```bash
+drivux                          # open the window and connect your account
+drivux fast on                  # instant folders (recommended)
+drivux account add work         # connect a second Google account in ~/GoogleDrive-work
+drivux offline add ~/GoogleDrive/Projects     # keep a folder available offline
+drivux status                   # sync status of every account
+```
+
+## FAQ
+
+**Is it safe?** Drivux talks to Google through rclone with the permissions you grant in your browser.
+Nothing is sent anywhere else. Disconnecting removes the services, the cache and the access;
+**nothing is deleted from Google Drive.**
+
+**Does it use my disk?** Only for files you opened (up to 10 GB, removed after 30 days without use)
+and for files you chose to keep offline.
+
+**What happens if I delete a file in the folder?** It is deleted from Google Drive too (it goes to the Drive trash).
+
+**Does it work offline?** Cached and kept-offline files open; the folder list also stays visible with Instant folders on.
+
+**Why not just use rclone?** rclone is great, but you need to write the unit files, tune the mount flags
+and watch the logs. Drivux does that and adds the window, tray, notifications, offline menu and accounts.
+
+---
 
 ## Compatibility
 
@@ -88,41 +154,6 @@ sudo apt install rclone fuse3 python3-gi gir1.2-gtk-4.0 gir1.2-adw-1            
 sudo zypper install rclone fuse3 python3-gobject typelib-1_0-Gtk-4_0 typelib-1_0-Adw-1  # openSUSE
 ```
 
-## Instant folders
-
-By default rclone forgets the list of your files whenever it restarts, so for a few minutes after
-boot some folders are slow to open. `drivux fast on` fixes that, the way Google Drive for desktop
-does on Windows:
-
-```
-~/GoogleDrive   (Drivux: names come from a database on disk)
-      |  open, read, write, rename, delete
-      v
-rclone mount (hidden)  ->  Google Drive
-```
-
-- Folders and file info are answered from `~/.cache/drivux/index.sqlite3`: ~0.2 s after a restart
-  with 14 thousand files, with or without internet.
-- Everything else goes to rclone, which keeps doing the cache and the uploads.
-- Drivux reads the whole Drive tree in the background every 5 minutes to keep the list current.
-  **Changes made on drive.google.com can take up to 5 minutes to show up** (about 10 s without it).
-- The first time it reads the tree before showing the folder (about a minute).
-- Needs `python-pyfuse3` (Arch) or `python3-pyfuse3` (Debian, Fedora). `drivux fast off` goes back.
-
-## Running from source
-
-```bash
-PYTHONPATH=src python3 -m drivux          # opens the interface
-PYTHONPATH=src python3 -m drivux setup    # sets up from the terminal
-PYTHONPATH=src python3 -m drivux status
-```
-
-Tests:
-
-```bash
-make test
-```
-
 ## How it works
 
 | Piece | Location |
@@ -154,19 +185,33 @@ Disconnecting removes the services, the cache and the account access.
   To avoid depending on it, create your own client ID in Google Cloud and enter it
   under **Advanced** on the setup screen (or `drivux setup --client-id ... --client-secret ...`).
 
+## Running from source
+
+```bash
+PYTHONPATH=src python3 -m drivux          # opens the interface
+PYTHONPATH=src python3 -m drivux setup    # sets up from the terminal
+PYTHONPATH=src python3 -m drivux status
+make test
+```
+
 ## Roadmap
 
+- [x] On-demand Google Drive folder with a GTK4 interface
+- [x] Notifications, "Keep offline" in Nautilus, tray icon
+- [x] Instant folders, kept on disk (`drivux fast on`)
+- [x] Several Google accounts
+- [x] .deb, .rpm and Arch packages, install-tested in CI on Ubuntu, Debian, Fedora and Arch
+- [ ] Follow the Drive change feed (about 10 s) instead of rescanning every 5 minutes
 - [ ] Wizard to create your own Google Cloud client ID
 - [ ] Status icons on files (cloud / available offline) in Nautilus
-- [x] "Keep offline" from the right-click menu (Nautilus)
-- [x] Tray icon with the sync status, progress and error alerts
-- [x] Several Google accounts
-- [x] Persist the folder list to disk so it is instant right after boot (`drivux fast on`)
-- [ ] Follow the Drive change feed (about 10 s) instead of rescanning every 5 minutes
-- [x] .deb, .rpm and Arch packages, install-tested in CI on Ubuntu, Debian, Fedora and Arch
 - [ ] Publish to the AUR (new AUR account registration is temporarily closed)
 - [ ] Support for systems without systemd
 - [ ] Other services supported by rclone (OneDrive, Dropbox…)
+
+## Contributing
+
+Issues and pull requests are welcome. Run `make test` before sending a change.
+Drivux is a thin layer over rclone, so if something is a rclone limitation, the fix may belong there.
 
 ## License
 
