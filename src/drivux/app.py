@@ -108,6 +108,7 @@ class DrivuxWindow(Adw.ApplicationWindow):
         self.update_banner.connect("button-clicked", self._on_update_clicked)
         self.release: updater.Release | None = None
         self._updating_app = False
+        self._asked = False
 
         view = Adw.ToolbarView(content=self.toasts)
         view.add_top_bar(header)
@@ -124,7 +125,7 @@ class DrivuxWindow(Adw.ApplicationWindow):
         self.show_initial_page()
         GLib.timeout_add_seconds(2, self._tick)
         GLib.timeout_add_seconds(60, self._refresh_quota)
-        GLib.timeout_add_seconds(5, self._check_update_once)
+        GLib.timeout_add_seconds(2, self._check_update_once)
         GLib.timeout_add_seconds(updater.CHECK_SECONDS, self._check_update)
 
     # Pages
@@ -263,7 +264,7 @@ class DrivuxWindow(Adw.ApplicationWindow):
         updates = Adw.PreferencesGroup(title="Updates", description=f"Drivux {__version__}")
         self.update_row = Adw.ComboRow(
             title="New versions",
-            model=Gtk.StringList.new(["Only tell me", "Download, then ask", "Install automatically"]),
+            model=Gtk.StringList.new(["Only tell me", "Ask me first", "Install automatically"]),
         )
         self.update_row.set_selected(config.UPDATE_MODES.index(config.load_settings()["update_mode"]))
         self.update_row.connect("notify::selected", self._on_update_mode)
@@ -317,6 +318,23 @@ class DrivuxWindow(Adw.ApplicationWindow):
             self.update_banner.set_button_label("See what is new")
         elif mode == "auto":
             self._start_update(only_if_idle=True)
+        elif forced or not self._asked:
+            self._asked = True  # once per opening of the window; "Later" leaves the banner
+            self._ask_to_update(release)
+
+    def _ask_to_update(self, release: updater.Release) -> None:
+        dialog = Adw.AlertDialog(
+            heading=f"Update to Drivux {release.version}?",
+            body=f"You have Drivux {__version__}. The update is downloaded, checked and installed; "
+            "your Drive folder keeps working and you may be asked for your password.",
+        )
+        dialog.add_response("later", "Later")
+        dialog.add_response("update", "Update")
+        dialog.set_response_appearance("update", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("update")
+        dialog.set_close_response("later")
+        dialog.connect("response", lambda _d, response: response == "update" and self._start_update())
+        dialog.present(self)
 
     def _on_update_clicked(self, _banner) -> None:
         if config.load_settings()["update_mode"] == "notify":
@@ -701,15 +719,16 @@ class DrivuxApp(Adw.Application):
         window.present()
 
     def _on_about(self, *_args) -> None:
-        Adw.AboutDialog(
+        about = Adw.AboutDialog(
             application_name="Drivux",
             application_icon="folder-remote-symbolic",
             version=__version__,
             comments="On-demand Google Drive for Linux, powered by rclone.",
             developer_name="xfr3p",
             license_type=Gtk.License.GPL_3_0,
-            website="https://github.com/xfr3pbr/drivux",
-        ).present(self.get_active_window())
+        )
+        about.add_link("GitHub", "https://github.com/xfr3pbr/drivux")  # shown instead of the generic "Website" row
+        about.present(self.get_active_window())
 
 
 def main() -> int:
