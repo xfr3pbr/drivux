@@ -1,6 +1,6 @@
 # Maintainer: xfr3p <52558769+xfr3pbr@users.noreply.github.com>
 pkgname=drivux
-pkgver=0.1.0
+pkgver=1.0.0
 pkgrel=1
 pkgdesc="On-demand Google Drive for Linux with a simple interface (rclone + GTK4)"
 arch=('any')
