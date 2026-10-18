@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Drivux
+Comment=Google Drive sob demanda
+Exec=drivux
+Icon=folder-remote
+Terminal=false
+Categories=Utility;Network;FileTools;
+Keywords=google;drive;nuvem;cloud;sync;rclone;
