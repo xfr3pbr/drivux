@@ -2,15 +2,16 @@
 
 import threading
 import time
+import urllib.request
 from pathlib import Path
 
 import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
+from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk  # noqa: E402
 
-from . import __version__, config, rclone, service  # noqa: E402
+from . import __version__, changes, config, notifier, rclone, service, updater  # noqa: E402
 
 APP_ID = "io.github.xfr3pbr.Drivux"
 SIZE_UNITS = {"K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4}
@@ -50,6 +51,22 @@ def run_in_thread(func, callback):
     threading.Thread(target=worker, daemon=True).start()
 
 
+def load_profile(cfg: config.Config) -> dict:
+    """Name, email and photo (a file in the cache) of the Google account; the photo may be missing."""
+    user = changes.Feed(cfg.remote).profile()
+    photo = ""
+    if user.get("photoLink"):
+        target = config.cache_dir(cfg.name) / "profile.jpg"
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with urllib.request.urlopen(user["photoLink"], timeout=15) as response:
+                target.write_bytes(response.read())
+            photo = str(target)
+        except OSError:
+            photo = str(target) if target.exists() else ""
+    return {"name": user.get("displayName", ""), "email": user.get("emailAddress", ""), "photo": photo}
+
+
 def usage_row(title: str) -> tuple[Adw.ActionRow, Gtk.LevelBar]:
     """Row with a usage bar, Baobab style."""
     row = Adw.ActionRow(title=title)
@@ -75,19 +92,40 @@ class DrivuxWindow(Adw.ApplicationWindow):
         menu = Gio.Menu()
         menu.append("About Drivux", "app.about")
         header.pack_end(Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu))
+        self.profiles: dict[str, dict] = {}
+        self.avatar = Adw.Avatar(size=28, show_initials=True)
+        self.account_popover = Gtk.Popover()
+        self.account_button = Gtk.MenuButton(
+            child=self.avatar, popover=self.account_popover, visible=False, css_classes=["flat", "circular"],
+            tooltip_text="Google account",
+        )
+        header.pack_end(self.account_button)
+        self.prefs_back = Gtk.Button(icon_name="go-previous-symbolic", visible=False, tooltip_text="Back")
+        self.prefs_back.connect("clicked", lambda _b: self.show_main(self.cfg))
+        header.pack_start(self.prefs_back)
+
+        self.update_banner = Adw.Banner(revealed=False, button_label="Update")
+        self.update_banner.connect("button-clicked", self._on_update_clicked)
+        self.release: updater.Release | None = None
+        self._updating_app = False
 
         view = Adw.ToolbarView(content=self.toasts)
         view.add_top_bar(header)
+        view.add_top_bar(self.update_banner)
         self.set_content(view)
 
         self.stack.add_named(self._build_deps_page(), "deps")
         self.stack.add_named(self._build_setup_page(), "setup")
         self.stack.add_named(self._build_busy_page(), "busy")
         self.stack.add_named(self._build_main_page(), "main")
+        self.stack.add_named(self._build_prefs_page(), "prefs")
+        self.stack.connect("notify::visible-child-name", self._on_page_changed)
 
         self.show_initial_page()
         GLib.timeout_add_seconds(2, self._tick)
         GLib.timeout_add_seconds(60, self._refresh_quota)
+        GLib.timeout_add_seconds(5, self._check_update_once)
+        GLib.timeout_add_seconds(updater.CHECK_SECONDS, self._check_update)
 
     # Pages
 
@@ -172,15 +210,6 @@ class DrivuxWindow(Adw.ApplicationWindow):
             header.append(widget)
         box.append(header)
 
-        self.account_group = Adw.PreferencesGroup(title="Account")
-        self.account_row = Adw.ComboRow(title="Google account")
-        self.account_row.connect("notify::selected", self._on_account_selected)
-        add_account = Gtk.Button(label="Add account", valign=Gtk.Align.CENTER)
-        add_account.connect("clicked", lambda _b: self.show_setup())
-        self.account_row.add_suffix(add_account)
-        self.account_group.add(self.account_row)
-        box.append(self.account_group)
-
         space = Adw.PreferencesGroup(title="Storage")
         self.cloud_row, self.cloud_bar = usage_row("Google Drive")
         self.cloud_row.set_subtitle("Calculating…")
@@ -189,7 +218,6 @@ class DrivuxWindow(Adw.ApplicationWindow):
         space.add(self.local_row)
         box.append(space)
 
-        prefs = Adw.PreferencesGroup(title="Preferences")
         self.connected_row = Adw.SwitchRow(title="Drive connected", subtitle="Turn off to pause")
         self.connected_row.connect("notify::active", self._on_connected_toggled)
         self.startup_row = Adw.SwitchRow(title="Start with the computer")
@@ -198,26 +226,135 @@ class DrivuxWindow(Adw.ApplicationWindow):
         self.notify_row.connect("notify::active", self._on_notify_toggled)
         self.tray_row = Adw.SwitchRow(title="Tray icon", subtitle="Show the sync status next to the clock")
         self.tray_row.connect("notify::active", self._on_tray_toggled)
+        info = Adw.PreferencesGroup(title="Details")
         self.index_row = Adw.ActionRow(title="Folder list")
         self.main_folder_row = Adw.ActionRow(title="Folder")
-        prefs.add(self.connected_row)
-        prefs.add(self.startup_row)
-        prefs.add(self.notify_row)
-        prefs.add(self.tray_row)
-        prefs.add(self.index_row)
-        prefs.add(self.main_folder_row)
-        box.append(prefs)
-
-        disconnect = Gtk.Button(
-            label="Disconnect account",
-            halign=Gtk.Align.CENTER,
-            css_classes=["pill", "destructive-action"],
-        )
-        disconnect.connect("clicked", self._on_disconnect)
-        box.append(disconnect)
+        info.add(self.index_row)
+        info.add(self.main_folder_row)
+        box.append(info)
 
         clamp = Adw.Clamp(child=box, maximum_size=480, margin_start=12, margin_end=12)
         return Gtk.ScrolledWindow(child=clamp, hscrollbar_policy=Gtk.PolicyType.NEVER)
+
+    def _build_prefs_page(self) -> Gtk.Widget:
+        page = Adw.PreferencesPage()
+        general = Adw.PreferencesGroup(title="General")
+        for row in (self.connected_row, self.startup_row, self.tray_row):
+            general.add(row)
+        page.add(general)
+
+        alerts = Adw.PreferencesGroup(title="Notifications", description="Choose what is shown on the screen.")
+        alerts.add(self.notify_row)
+        self.type_rows: dict[str, Adw.SwitchRow] = {}
+        for key, title, subtitle in (
+            ("uploads", "Uploads", "Files going up to Drive"),
+            ("downloads", "Downloads", "Files being fetched from Drive"),
+            ("done", "Sync finished", "When everything is up to date"),
+            ("errors", "Errors", "When something fails to sync"),
+            ("updates", "Updates", "When a new Drivux version is available"),
+        ):
+            row = Adw.SwitchRow(title=title, subtitle=subtitle)
+            row.connect("notify::active", self._on_type_toggled, key)
+            self.notify_row.bind_property("active", row, "sensitive", GObject.BindingFlags.SYNC_CREATE)
+            self.type_rows[key] = row
+            alerts.add(row)
+        page.add(alerts)
+
+        updates = Adw.PreferencesGroup(title="Updates", description=f"Drivux {__version__}")
+        self.update_row = Adw.ComboRow(
+            title="New versions",
+            model=Gtk.StringList.new(["Only tell me", "Download, then ask", "Install automatically"]),
+        )
+        self.update_row.set_selected(config.UPDATE_MODES.index(config.load_settings()["update_mode"]))
+        self.update_row.connect("notify::selected", self._on_update_mode)
+        check = Gtk.Button(label="Check now", valign=Gtk.Align.CENTER)
+        check.connect("clicked", lambda _b: self._check_update(force=True))
+        check_row = Adw.ActionRow(title="Check for updates")
+        check_row.add_suffix(check)
+        updates.add(self.update_row)
+        updates.add(check_row)
+        page.add(updates)
+        return page
+
+    # Updates
+
+    def _on_update_mode(self, row, _pspec) -> None:
+        settings = config.load_settings()
+        settings["update_mode"] = config.UPDATE_MODES[row.get_selected()]
+        config.save_settings(settings)
+
+    def _check_update_once(self) -> bool:
+        self._check_update()
+        return GLib.SOURCE_REMOVE
+
+    def _check_update(self, force: bool = False) -> bool:
+        run_in_thread(lambda: updater.check(force), lambda release, error: self._on_checked(release, error, force))
+        return GLib.SOURCE_CONTINUE
+
+    def _on_checked(self, release, error, forced: bool) -> None:
+        if error:
+            if forced:
+                self.toast("Could not check for updates")
+            return
+        if release is None:
+            if forced:
+                self.toast("Drivux is up to date")
+            return
+        self.release = release
+        self.update_banner.set_title(f"Drivux {release.version} is available")
+        self.update_banner.set_revealed(True)
+        state = updater.load_state()
+        if state.get("announced") != release.version:
+            state["announced"] = release.version
+            updater.save_state(state)
+            if self.cfg is not None and "updates" in self.cfg.notify_types:
+                try:
+                    notifier.dbus_sender()(f"Drivux {release.version} is available", "Open Drivux to update.")
+                except GLib.Error:
+                    pass
+        mode = config.load_settings()["update_mode"]
+        if mode == "notify":
+            self.update_banner.set_button_label("See what is new")
+        elif mode == "auto":
+            self._start_update(only_if_idle=True)
+
+    def _on_update_clicked(self, _banner) -> None:
+        if config.load_settings()["update_mode"] == "notify":
+            Gtk.UriLauncher(uri=self.release.page).launch(self, None, None)
+        else:
+            self._start_update()
+
+    def _start_update(self, only_if_idle: bool = False) -> None:
+        release = self.release
+        if self._updating_app or release is None:
+            return
+        manager = updater.package_manager()
+        if manager is None:
+            self.toast("This system's package manager is not supported for automatic updates")
+            return
+        accounts = [a.name for a in self.accounts]
+
+        def work() -> None:
+            if only_if_idle and any(service.status(n).uploading + service.status(n).queued for n in accounts):
+                return  # files are still going up: try again at the next check
+            path = updater.download(release, manager)
+            GLib.idle_add(self.update_banner.set_title, "Installing the update…")
+            updater.install(path, manager)
+
+        self._updating_app = True
+        self.update_banner.set_title(f"Downloading Drivux {release.version}…")
+        self.update_banner.set_button_label("")
+        run_in_thread(work, self._on_update_done)
+
+    def _on_update_done(self, _result, error) -> None:
+        self._updating_app = False
+        self.update_banner.set_button_label("Update")
+        if error:
+            self.update_banner.set_title(f"Drivux {self.release.version} is available")
+            self.toast(f"Update failed: {error}")
+            return
+        self.update_banner.set_revealed(False)
+        self.toast("Drivux updated. Close and open the window to use the new version.")
 
     # Navigation
 
@@ -225,6 +362,7 @@ class DrivuxWindow(Adw.ApplicationWindow):
         issues = rclone.problems()
         if issues:
             self.deps_page.set_description("\n\n".join(issues) + "\n\nThen click Check again.")
+            self.account_button.set_visible(False)
             self.stack.set_visible_child_name("deps")
             return
         self.accounts = [cfg for cfg in config.load_all() if service.unit_path(service.unit_name("folder", cfg.name)).exists()]
@@ -242,17 +380,12 @@ class DrivuxWindow(Adw.ApplicationWindow):
             name = "work" if number == 2 else f"account{number}"
         self.name_row.set_text(name)
         self.back_button.set_visible(bool(self.accounts))
+        self.account_button.set_visible(False)
         self.stack.set_visible_child_name("setup")
 
     def show_main(self, cfg: config.Config) -> None:
         self.cfg = cfg
-        self._updating = True
-        names = Gtk.StringList()
-        for account in self.accounts:
-            names.append(f"{account.name} · {account.folder}" if len(self.accounts) > 1 else str(account.folder))
-        self.account_row.set_model(names)
-        self.account_row.set_selected(next(i for i, a in enumerate(self.accounts) if a.name == cfg.name))
-        self._updating = False
+        self._build_account_menu()
         self.cache_max = parse_size(cfg.cache_max_size)
         self.main_folder_row.set_subtitle(str(cfg.folder))
         self.cloud_row.set_subtitle("Calculating…")
@@ -260,12 +393,112 @@ class DrivuxWindow(Adw.ApplicationWindow):
         self._refresh_quota()
         self._tick()
 
-    def _on_account_selected(self, row, _pspec) -> None:
-        if self._updating or not self.accounts:
+    def _build_account_menu(self) -> None:
+        """The avatar at the top right: photo (or first letter) of the account; its menu switches, adds, signs out."""
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, margin_top=6, margin_bottom=6, margin_start=6, margin_end=6)
+        for account in self.accounts:
+            profile = self.profiles.get(account.name, {})
+            title = profile.get("name") or account.name
+            subtitle = profile.get("email") or str(account.folder)
+            row = Gtk.Button(css_classes=["flat"])
+            line = Gtk.Box(spacing=12)
+            line.append(self._avatar_for(account.name, 32))
+            text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER)
+            text.append(Gtk.Label(label=title, xalign=0, css_classes=["heading"]))
+            text.append(Gtk.Label(label=subtitle, xalign=0, css_classes=["dim-label", "caption"]))
+            line.append(text)
+            if account.name == self.cfg.name:
+                line.append(Gtk.Image(icon_name="object-select-symbolic", hexpand=True, halign=Gtk.Align.END))
+            row.set_child(line)
+            row.connect("clicked", self._on_switch_account, account)
+            box.append(row)
+        box.append(Gtk.Separator(margin_top=4, margin_bottom=4))
+        prefs = Gtk.Button(label="Preferences", css_classes=["flat"])
+        prefs.get_child().set_xalign(0)
+        prefs.connect("clicked", self._on_open_prefs)
+        box.append(prefs)
+        add = Gtk.Button(label="Add account", css_classes=["flat"])
+        add.get_child().set_xalign(0)
+        add.connect("clicked", self._on_add_account)
+        box.append(add)
+        sign_out = Gtk.Button(label="Sign out", css_classes=["flat"])
+        sign_out.get_child().set_xalign(0)
+        sign_out.connect("clicked", self._on_disconnect)
+        box.append(sign_out)
+        self.account_popover.set_child(box)
+        self._set_avatar(self.avatar, self.cfg.name)
+        self.account_button.set_visible(True)
+        if self.cfg.name not in self.profiles:
+            cfg = self.cfg
+            run_in_thread(lambda: load_profile(cfg), lambda info, error: self._on_profile(cfg, info, error))
+
+    def _avatar_for(self, name: str, size: int) -> Adw.Avatar:
+        avatar = Adw.Avatar(size=size, show_initials=True)
+        self._set_avatar(avatar, name)
+        return avatar
+
+    def _set_avatar(self, avatar: Adw.Avatar, name: str) -> None:
+        profile = self.profiles.get(name, {})
+        avatar.set_text(profile.get("name") or profile.get("email") or name)
+        avatar.set_custom_image(None)
+        if profile.get("photo"):
+            try:
+                avatar.set_custom_image(Gdk.Texture.new_from_filename(profile["photo"]))
+            except GLib.Error:
+                pass
+
+    def _on_profile(self, cfg: config.Config, info, error) -> None:
+        if error or not info:
+            self.profiles[cfg.name] = {}  # stay on the first letter of the account name
             return
-        selected = row.get_selected()
-        if 0 <= selected < len(self.accounts) and self.accounts[selected].name != self.cfg.name:
-            self.show_main(self.accounts[selected])
+        self.profiles[cfg.name] = info
+        if self.cfg is not None and self.accounts:
+            self._build_account_menu()
+
+    def _on_switch_account(self, _button, account: config.Config) -> None:
+        self.account_popover.popdown()
+        if account.name != self.cfg.name:
+            self.show_main(account)
+
+    def _on_open_prefs(self, _button) -> None:
+        self.account_popover.popdown()
+        self._sync_type_rows()
+        self.stack.set_visible_child_name("prefs")
+
+    def _on_page_changed(self, stack, _pspec) -> None:
+        self.prefs_back.set_visible(stack.get_visible_child_name() == "prefs")
+
+    def _sync_type_rows(self) -> None:
+        self._updating = True
+        for key, row in self.type_rows.items():
+            row.set_active(key in self.cfg.notify_types)
+        self._updating = False
+
+    def _on_type_toggled(self, row, _pspec, key: str) -> None:
+        if self._updating:
+            return
+        name, active = self.cfg.name, row.get_active()
+
+        def work() -> config.Config:
+            cfg = config.load(name)
+            chosen = set(cfg.notify_types) | {key} if active else set(cfg.notify_types) - {key}
+            types = [t for t in config.NOTIFY_TYPES if t in chosen]
+            cfg.notify_types = types
+            config.save(cfg)
+            return cfg
+
+        run_in_thread(work, self._on_types_saved)
+
+    def _on_types_saved(self, cfg, error) -> None:
+        if error:
+            self.toast(f"Error: {error}")
+            return
+        self.cfg = cfg
+        self.accounts = [cfg if a.name == cfg.name else a for a in self.accounts]
+
+    def _on_add_account(self, _button) -> None:
+        self.account_popover.popdown()
+        self.show_setup()
 
     def toast(self, message: str) -> None:
         self.toasts.add_toast(Adw.Toast(title=message, timeout=6))
@@ -323,7 +556,7 @@ class DrivuxWindow(Adw.ApplicationWindow):
     # Status
 
     def _tick(self) -> bool:
-        if self.stack.get_visible_child_name() == "main" and not self._status_busy:
+        if self.stack.get_visible_child_name() in ("main", "prefs") and not self._status_busy:
             self._status_busy = True
             name = self.cfg.name
             run_in_thread(lambda: service.status(name), self._show_status)
@@ -422,13 +655,14 @@ class DrivuxWindow(Adw.ApplicationWindow):
         self._tick()
 
     def _on_disconnect(self, _button) -> None:
+        self.account_popover.popdown()
         dialog = Adw.AlertDialog(
-            heading=f"Disconnect {self.cfg.name if len(self.accounts) > 1 else 'Google Drive'}?",
+            heading=f"Sign out of {self.cfg.name if len(self.accounts) > 1 else 'Google Drive'}?",
             body="The folder will stop showing your Drive and the files cached on this "
             "computer will be deleted. Nothing is deleted from Google Drive.",
         )
         dialog.add_response("cancel", "Cancel")
-        dialog.add_response("disconnect", "Disconnect")
+        dialog.add_response("disconnect", "Sign out")
         dialog.set_response_appearance("disconnect", Adw.ResponseAppearance.DESTRUCTIVE)
         dialog.connect("response", self._on_disconnect_response)
         dialog.present(self)
@@ -452,7 +686,7 @@ class DrivuxWindow(Adw.ApplicationWindow):
         self.accounts = [cfg for cfg in self.accounts if cfg.name != self.cfg.name]
         self.cfg = None
         self.show_initial_page()
-        self.toast("Google Drive disconnected")
+        self.toast("Signed out of Google Drive")
 
 
 class DrivuxApp(Adw.Application):

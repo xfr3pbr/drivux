@@ -19,12 +19,13 @@ from pathlib import Path
 import pyfuse3
 import trio
 
-from . import rclone
+from . import changes, rclone
 from .index import ROOT, Index, Node
 
 log = logging.getLogger("drivux.front")
 
 BACK_WAIT_SECONDS = 60  # an open() while rclone is still starting waits this long before failing
+FEED_SECONDS = 10  # how often the Drive change feed is read
 CACHE_SECONDS = 5  # how long the kernel may reuse an answer (also how late a scan shows up)
 WRITE_FLAGS = os.O_WRONLY | os.O_RDWR
 FUSE_SUBTYPE = "sshfs"
@@ -258,23 +259,56 @@ class Front(pyfuse3.Operations):
         return await self._live_attr(self._node(inode))
 
 
+async def full_scan(index: Index, remote: str, feed: changes.Feed) -> None:
+    """Read the whole Drive. The feed token is taken first, so nothing changed meanwhile is missed."""
+    started = time.monotonic()
+    try:
+        token = await trio.to_thread.run_sync(feed.start_token)
+    except Exception as exc:  # noqa: BLE001 - no feed: scans keep the index right, just later
+        log.warning("change feed unavailable: %s", exc)
+        token = None
+    entries = await trio.to_thread.run_sync(rclone.list_tree, remote)
+    result = index.apply_scan(entries, started)
+    if token:
+        index.set_meta("change_token", token)
+    log.info(
+        "scan: %d added, %d updated, %d removed, %d skipped (%d items)",
+        result.added, result.updated, result.removed, result.skipped, index.count(),
+    )
+
+
+async def follow_changes(index: Index, feed: changes.Feed) -> bool:
+    """Apply what changed on the Drive since the last time. False when a full scan is needed."""
+    token = index.get_meta("change_token")
+    if not token:
+        return False
+    try:
+        root = index.get_meta("root_id") or await trio.to_thread.run_sync(feed.root_id)
+        index.set_meta("root_id", root)
+        found, token = await trio.to_thread.run_sync(feed.since, token)
+    except changes.TokenExpired:
+        return False
+    if found:
+        result = index.apply_changes(found, root)
+        log.info("changes: %d added, %d updated, %d removed", result.added, result.updated, result.removed)
+    index.set_meta("change_token", token)
+    return True
+
+
 async def refresh_loop(index: Index, remote: str, interval: int) -> None:
-    """Keep the index equal to the Drive: one full listing every `interval` seconds."""
-    last = index.last_scan()
-    if last:  # the index is fresh (first start just read it, or a quick restart): do not read it again at once
-        await trio.sleep(max(0.0, last + interval - time.time()))
+    """Keep the index equal to the Drive: follow the change feed every few seconds and
+    read the whole Drive again every `interval` seconds, in case the feed missed something."""
+    feed = changes.Feed(remote)
+    last_full = index.last_full_scan() or 0.0
     while True:
-        started = time.monotonic()
         try:
-            entries = await trio.to_thread.run_sync(rclone.list_tree, remote)
-            result = index.apply_scan(entries, started)
-            log.info(
-                "scan: %d added, %d updated, %d removed, %d skipped (%d items)",
-                result.added, result.updated, result.removed, result.skipped, index.count(),
-            )
+            if time.time() - last_full >= interval or not await follow_changes(index, feed):
+                await full_scan(index, remote, feed)
+                last_full = time.time()
+                index.set_meta("last_full_scan", str(last_full))
         except Exception as exc:  # noqa: BLE001 - offline or rclone busy: keep the old index and try again
             log.warning("scan failed: %s", exc)
-        await trio.sleep(interval)
+        await trio.sleep(FEED_SECONDS)
 
 
 async def _stop_on_signal() -> None:
@@ -289,7 +323,7 @@ def run(
     back: Path,
     index_file: Path,
     remote: str,
-    interval: int = 300,
+    interval: int = 21600,
     scan: bool = True,
     require_mount: bool = True,
 ) -> None:

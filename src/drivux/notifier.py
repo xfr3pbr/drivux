@@ -4,7 +4,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import rclone
+from . import config, rclone
 
 POLL_SECONDS = 2
 # Only notify after N consecutive reads with pending work (~4 s), so quick
@@ -51,14 +51,16 @@ def describe(act: Activity, label: str = "") -> tuple[str, str]:
 class Notifier:
     """Decide when to show, update and close notifications."""
 
-    def __init__(self, send, label: str = ""):
+    def __init__(self, send, label: str = "", types=lambda: config.NOTIFY_TYPES):
         # send(title, body, *, replaces, persistent, critical) -> notification id
         self.send = send
         self.label = label  # account name, when there is more than one
+        self.types = types  # called every read: the kinds of notification the user wants
         self.progress_id = 0
         self.last_shown: tuple[str, str] | None = None
         self.busy_ticks = 0
         self.errors_seen: int | None = None
+        self.worked = False  # a sync long enough to notify about has happened
 
     def titled(self, title: str) -> str:
         return f"{title} ({self.label})" if self.label else title
@@ -67,28 +69,39 @@ class Notifier:
         if act is None:
             self.busy_ticks = 0
             return
+        wanted = set(self.types())
+        busy = bool(act.uploads or act.downloads)
+        shown = Activity(
+            act.uploads if "uploads" in wanted else [],
+            act.downloads if "downloads" in wanted else [],
+        )
 
         if self.errors_seen is None:
             self.errors_seen = act.errors  # ignore errors from before Drivux started
         elif act.errors > self.errors_seen:
             self.errors_seen = act.errors
-            self.send(self.titled("Sync error"), act.last_error or "See the Drivux log.", critical=True)
+            if "errors" in wanted:
+                self.send(self.titled("Sync error"), act.last_error or "See the Drivux log.", critical=True)
 
-        if act.uploads or act.downloads:
+        if busy:
             self.busy_ticks += 1
             if self.busy_ticks < BUSY_TICKS_BEFORE_NOTIFY:
                 return
-            message = describe(act, self.label)
-            if message != self.last_shown:
-                self.progress_id = self.send(*message, replaces=self.progress_id, persistent=True)
-                self.last_shown = message
+            self.worked = True
+            if shown.uploads or shown.downloads:
+                message = describe(shown, self.label)
+                if message != self.last_shown:
+                    self.progress_id = self.send(*message, replaces=self.progress_id, persistent=True)
+                    self.last_shown = message
             return
 
         self.busy_ticks = 0
-        if self.last_shown:
-            self.send(self.titled("Everything is synced"), "Your files are up to date with Google Drive.", replaces=self.progress_id)
+        if self.worked:
+            if "done" in wanted:
+                self.send(self.titled("Everything is synced"), "Your files are up to date with Google Drive.", replaces=self.progress_id)
             self.progress_id = 0
             self.last_shown = None
+            self.worked = False
 
 
 def dbus_sender():
@@ -124,8 +137,12 @@ def dbus_sender():
     return send
 
 
-def run(socket: Path, label: str = "") -> None:
-    notifier = Notifier(dbus_sender(), label)
+def run(socket: Path, label: str = "", name: str = config.DEFAULT_ACCOUNT) -> None:
+    def types() -> list[str]:  # read again each time, so the preferences window takes effect at once
+        cfg = config.load(name)
+        return cfg.notify_types if cfg else list(config.NOTIFY_TYPES)
+
+    notifier = Notifier(dbus_sender(), label, types)
     while True:
         notifier.update(read_activity(socket))
         time.sleep(POLL_SECONDS)

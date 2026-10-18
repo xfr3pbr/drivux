@@ -8,7 +8,7 @@ called "default" and keeps the original file names, so a single-account setup
 import json
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -30,6 +30,7 @@ def config_path() -> Path:
 
 DEFAULT_FOLDER = Path.home() / "GoogleDrive"
 DEFAULT_ACCOUNT = "default"
+NOTIFY_TYPES = ("uploads", "downloads", "done", "errors", "updates")  # what a notification can be about
 NAME_PATTERN = re.compile(r"[a-z0-9]{1,20}")  # no "-" or "@": they separate the name in unit and file names
 
 
@@ -63,6 +64,29 @@ class Config:
     cache_max_age: str = "720h"
     fast_listing: bool = False  # folder listing from the on-disk index (see front.py)
     name: str = DEFAULT_ACCOUNT
+    notify_types: list[str] = field(default_factory=lambda: list(NOTIFY_TYPES))  # which notifications are shown
+
+
+UPDATE_MODES = ("notify", "ask", "auto")  # only tell · download and ask · install by itself
+
+
+def settings_path() -> Path:
+    return config_home() / "drivux" / "settings.json"
+
+
+def load_settings() -> dict:
+    """Preferences that belong to the app, not to an account."""
+    try:
+        data = json.loads(settings_path().read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        data = {}
+    mode = data.get("update_mode")
+    return {"update_mode": mode if mode in UPDATE_MODES else "ask"}
+
+
+def save_settings(settings: dict) -> None:
+    settings_path().parent.mkdir(parents=True, exist_ok=True)
+    settings_path().write_text(json.dumps(settings, indent=2) + "\n")
 
 
 def _read() -> list[dict]:

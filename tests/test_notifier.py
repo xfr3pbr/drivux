@@ -63,3 +63,17 @@ class DescribeTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NotifierTypesTest(unittest.TestCase):
+    def run_sync(self, types):
+        send = FakeSender()
+        notifier = Notifier(send, types=lambda: types)
+        for act in (Activity(uploads=["a"]), Activity(uploads=["a"]), Activity(errors=1)):
+            notifier.update(act)
+        return [n["title"] for n in send.sent]
+
+    def test_only_the_chosen_kinds_are_shown(self):
+        self.assertEqual(self.run_sync(["uploads"]), ["Syncing 1 file"])
+        self.assertEqual(self.run_sync(["done"]), ["Everything is synced"])
+        self.assertEqual(self.run_sync([]), [])

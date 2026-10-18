@@ -119,3 +119,37 @@ class IndexTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ChangesTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.index = idx.Index(Path(self.tmp.name) / "index.sqlite3")
+        self.index.apply_scan(TREE, time.monotonic())
+
+    def tearDown(self):
+        self.index.close()
+        self.tmp.cleanup()
+
+    @staticmethod
+    def change(id_, name, parent, mime="text/plain", size=1, **extra):
+        file = {"id": id_, "name": name, "parents": [parent], "mimeType": mime, "size": str(size),
+                "modifiedTime": "2026-02-01T00:00:00.000Z", **extra}
+        return {"fileId": id_, "file": file}
+
+    def test_new_file_rename_and_removal(self):
+        self.index.apply_changes([self.change("n1", "new.txt", "ROOT")], "ROOT")
+        self.assertIsNotNone(self.index.lookup(idx.ROOT, "new.txt"))
+        self.index.apply_changes([self.change("n1", "newer.txt", "d1")], "ROOT")
+        docs = self.index.lookup(idx.ROOT, "Docs")
+        self.assertIsNone(self.index.lookup(idx.ROOT, "new.txt"))
+        self.assertIsNotNone(self.index.lookup(docs.inode, "newer.txt"))
+        self.index.apply_changes([{"fileId": "d1", "removed": True}], "ROOT")
+        self.assertEqual([n.name for n in self.index.children(idx.ROOT)], ["c.txt"])
+        self.assertEqual(self.index.count(), 1)
+
+    def test_trashed_and_docs_are_not_shown(self):
+        self.index.apply_changes([self.change("f3", "c.txt", "ROOT", trashed=True)], "ROOT")
+        self.assertIsNone(self.index.lookup(idx.ROOT, "c.txt"))
+        self.index.apply_changes([self.change("g1", "sheet", "ROOT", mime="application/vnd.google-apps.spreadsheet")], "ROOT")
+        self.assertIsNone(self.index.lookup(idx.ROOT, "sheet"))

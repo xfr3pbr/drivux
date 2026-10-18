@@ -106,7 +106,7 @@ def cmd_stop(args) -> int:
 def cmd_notify(args) -> int:
     cfg = _one_account(args.account)
     label = cfg.name if len(config.load_all()) > 1 else ""
-    notifier.run(config.socket_path(cfg.name), label)
+    notifier.run(config.socket_path(cfg.name), label, cfg.name)
     return 0
 
 
@@ -306,7 +306,7 @@ def main(argv: list[str] | None = None) -> int:
     front.add_argument("--back", help="where the rclone mount is (default: from the settings)")
     front.add_argument("--index", help="index file (default: ~/.cache/drivux/index.sqlite3)")
     front.add_argument("--remote", help="rclone remote name (default: from the settings)")
-    front.add_argument("--interval", type=int, default=300, help="seconds between Drive scans (default: 300)")
+    front.add_argument("--interval", type=int, default=21600, help="seconds between full Drive scans; changes arrive every 10 s (default: 21600)")
     front.add_argument("--no-scan", action="store_true", help="do not read the Drive (tests)")
     front.add_argument("--no-mount-check", action="store_true", help="--back is a plain folder (tests)")
     front.set_defaults(func=cmd_front)

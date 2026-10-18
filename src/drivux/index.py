@@ -112,6 +112,10 @@ class Index:
         value = self.get_meta("last_scan")
         return float(value) if value else None
 
+    def last_full_scan(self) -> float | None:
+        value = self.get_meta("last_full_scan")
+        return float(value) if value else self.last_scan() if self.get_meta("change_token") is None else None
+
     # Reading
 
     @staticmethod
@@ -283,6 +287,78 @@ class Index:
             raise
         self._paths.clear()
         return result
+
+    # Change feed
+
+    def apply_changes(self, changes: list[dict], root_id: str) -> ScanResult:
+        """Apply what Google reports changed (changes.list) to the index, in order."""
+        result = ScanResult()
+        self.db.execute("BEGIN")
+        try:
+            for change in changes:
+                self._apply_change(change, root_id, result)
+            self.db.execute("COMMIT")
+        except BaseException:
+            self.db.execute("ROLLBACK")
+            raise
+        self._paths.clear()
+        self.set_meta("last_scan", str(time.time()))
+        return result
+
+    def _inode_of(self, drive_id: str) -> int | None:
+        row = self.db.execute("SELECT inode FROM nodes WHERE drive_id=?", (drive_id,)).fetchone()
+        return row[0] if row else None
+
+    def _drop(self, inode: int, result: ScanResult) -> None:
+        pending = [inode]
+        while pending:
+            current = pending.pop()
+            pending += [row[0] for row in self.db.execute("SELECT inode FROM nodes WHERE parent=? AND inode != ?", (current, ROOT))]
+            self.db.execute("DELETE FROM nodes WHERE inode=?", (current,))
+            result.removed += 1
+
+    def _apply_change(self, change: dict, root_id: str, result: ScanResult) -> None:
+        inode = self._inode_of(change["fileId"])
+        file = change.get("file") or {}
+        mime = file.get("mimeType", "")
+        parents = file.get("parents") or []
+        parent_id = parents[0] if parents else None
+        parent = ROOT if parent_id == root_id else self._inode_of(parent_id) if parent_id else None
+        is_dir = mime == FOLDER_MIME
+        shown = not (mime.startswith(GOOGLE_APPS_PREFIX) and not is_dir)  # Docs, Sheets, shortcuts are not mounted
+        if change.get("removed") or file.get("trashed") or parent is None or not shown:
+            if inode is not None:  # gone, in the trash, or moved out of the folders we show
+                self._drop(inode, result)
+            return
+        name = file["name"]
+        size = 0 if is_dir else int(file.get("size") or 0)
+        mtime = _mtime_ns(file.get("modifiedTime", ""))
+        try:
+            if inode is None:
+                local = self.lookup(parent, name)
+                if local and self.db.execute("SELECT drive_id FROM nodes WHERE inode=?", (local.inode,)).fetchone()[0] is None:
+                    # created here, now it shows up on the Drive: adopt it
+                    self.db.execute(
+                        "UPDATE nodes SET drive_id=?, size=?, mtime_ns=? WHERE inode=?", (change["fileId"], size, mtime, local.inode)
+                    )
+                    result.updated += 1
+                elif local:  # two different items with the same name in one folder
+                    result.skipped += 1
+                else:
+                    self.db.execute(
+                        "INSERT INTO nodes (drive_id, parent, name, is_dir, size, mtime_ns) VALUES (?, ?, ?, ?, ?, ?)",
+                        (change["fileId"], parent, name, int(is_dir), size, mtime),
+                    )
+                    result.added += 1
+                return
+            current = self.get(inode)
+            if (current.parent, current.name, current.size, current.mtime_ns) != (parent, name, size, mtime):
+                self.db.execute(
+                    "UPDATE nodes SET parent=?, name=?, size=?, mtime_ns=? WHERE inode=?", (parent, name, size, mtime, inode)
+                )
+                result.updated += 1
+        except sqlite3.IntegrityError:  # a name taken by another item: the next full scan sorts it out
+            result.skipped += 1
 
     def _upsert(self, by_id, drive_id, parent, name, is_dir, size, mtime, started, result) -> int | None:
         try:
