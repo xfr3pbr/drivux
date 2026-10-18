@@ -1,4 +1,4 @@
-"""Notificações do sistema com o que ainda está sendo sincronizado."""
+"""Desktop notifications about what is still syncing."""
 
 import time
 from dataclasses import dataclass, field
@@ -7,8 +7,8 @@ from pathlib import Path
 from . import rclone
 
 POLL_SECONDS = 2
-# Só avisa depois de N leituras seguidas com algo pendente (~4 s), para que
-# salvamentos rápidos não fiquem piscando na tela.
+# Only notify after N consecutive reads with pending work (~4 s), so quick
+# saves don't flash on screen.
 BUSY_TICKS_BEFORE_NOTIFY = 2
 MAX_LISTED = 4
 
@@ -22,7 +22,7 @@ class Activity:
 
 
 def read_activity(socket: Path) -> Activity | None:
-    """Lê do rclone o que está pendente. None se a pasta não estiver montada."""
+    """Read pending work from rclone. None if the folder is not mounted."""
     try:
         stats = rclone.rc(socket, "core/stats")
     except rclone.RcloneError:
@@ -30,27 +30,27 @@ def read_activity(socket: Path) -> Activity | None:
     try:
         uploads = [item["name"] for item in rclone.rc(socket, "vfs/queue").get("queue", [])]
     except rclone.RcloneError:
-        uploads = []  # rclone antigo, sem vfs/queue: fica só com as transferências
+        uploads = []  # older rclone without vfs/queue: use transfers only
     downloads = [t["name"] for t in stats.get("transferring", []) if t["name"] not in uploads]
     return Activity(uploads, downloads, stats.get("errors", 0), stats.get("lastError", ""))
 
 
 def describe(act: Activity) -> tuple[str, str]:
-    """Título e corpo da notificação de progresso."""
+    """Title and body of the progress notification."""
     names = [f"↑ {Path(n).name}" for n in act.uploads] + [f"↓ {Path(n).name}" for n in act.downloads]
     total = len(names)
-    title = f"Sincronizando {total} arquivo{'s' if total > 1 else ''}"
+    title = f"Syncing {total} file{'s' if total > 1 else ''}"
     body = "\n".join(names[:MAX_LISTED])
     if total > MAX_LISTED:
-        body += f"\ne mais {total - MAX_LISTED}"
+        body += f"\nand {total - MAX_LISTED} more"
     return title, body
 
 
 class Notifier:
-    """Decide quando mostrar, atualizar e fechar as notificações."""
+    """Decide when to show, update and close notifications."""
 
     def __init__(self, send):
-        # send(title, body, *, replaces, persistent, critical) -> id da notificação
+        # send(title, body, *, replaces, persistent, critical) -> notification id
         self.send = send
         self.progress_id = 0
         self.last_shown: tuple[str, str] | None = None
@@ -63,10 +63,10 @@ class Notifier:
             return
 
         if self.errors_seen is None:
-            self.errors_seen = act.errors  # ignora erros de antes do Drivux abrir
+            self.errors_seen = act.errors  # ignore errors from before Drivux started
         elif act.errors > self.errors_seen:
             self.errors_seen = act.errors
-            self.send("Erro ao sincronizar", act.last_error or "Veja o log do Drivux.", critical=True)
+            self.send("Sync error", act.last_error or "See the Drivux log.", critical=True)
 
         if act.uploads or act.downloads:
             self.busy_ticks += 1
@@ -80,13 +80,13 @@ class Notifier:
 
         self.busy_ticks = 0
         if self.last_shown:
-            self.send("Tudo sincronizado", "Seus arquivos estão em dia com o Google Drive.", replaces=self.progress_id)
+            self.send("Everything is synced", "Your files are up to date with Google Drive.", replaces=self.progress_id)
             self.progress_id = 0
             self.last_shown = None
 
 
 def dbus_sender():
-    """Envia notificações pelo padrão freedesktop (funciona em qualquer desktop)."""
+    """Send notifications through the freedesktop standard (works on any desktop)."""
     from gi.repository import Gio, GLib
 
     bus = Gio.bus_get_sync(Gio.BusType.SESSION)

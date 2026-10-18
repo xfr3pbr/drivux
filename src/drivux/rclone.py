@@ -1,4 +1,4 @@
-"""Wrapper fino em volta do binário rclone."""
+"""Thin wrapper around the rclone binary."""
 
 import json
 import shutil
@@ -15,8 +15,8 @@ class RcloneError(RuntimeError):
 MIN_VERSION = (1, 60)
 OFFICIAL_INSTALL = "sudo -v ; curl https://rclone.org/install.sh | sudo bash"
 
-# Gerenciador de pacotes -> comando de instalação. Os nomes dos pacotes
-# (rclone, fuse3) são os mesmos nas principais distribuições.
+# Package manager -> install command. Package names (rclone, fuse3) are the
+# same across the major distributions.
 INSTALL_COMMANDS = {
     "apt": "sudo apt install",
     "dnf": "sudo dnf install",
@@ -38,7 +38,7 @@ def version() -> tuple[int, int] | None:
 
 
 def missing_dependencies() -> list[str]:
-    """Pacotes do sistema que faltam para o Drivux funcionar."""
+    """System packages Drivux needs that are missing."""
     missing = []
     if not shutil.which("rclone"):
         missing.append("rclone")
@@ -48,26 +48,26 @@ def missing_dependencies() -> list[str]:
 
 
 def install_hint(packages: list[str]) -> str:
-    """Comando para instalar os pacotes no gerenciador desta distribuição."""
+    """Command to install the packages with this distribution's package manager."""
     for manager, command in INSTALL_COMMANDS.items():
         if shutil.which(manager):
             return f"{command} {' '.join(packages)}"
-    return f"Instale pelo gerenciador de pacotes da sua distribuição: {', '.join(packages)}"
+    return f"Install with your distribution's package manager: {', '.join(packages)}"
 
 
 def problems() -> list[str]:
-    """O que impede o Drivux de funcionar neste sistema, em texto para o usuário."""
+    """What prevents Drivux from working on this system, as user-facing text."""
     if not shutil.which("systemctl"):
-        return ["O Drivux precisa do systemd, que esta distribuição não usa."]
+        return ["Drivux needs systemd, which this distribution does not use."]
     issues = []
     missing = missing_dependencies()
     if missing:
-        issues.append(f"Instale no terminal:\n\n{install_hint(missing)}")
+        issues.append(f"Install in a terminal:\n\n{install_hint(missing)}")
     elif (found := version()) and found < MIN_VERSION:
         need = ".".join(map(str, MIN_VERSION))
         issues.append(
-            f"O rclone desta distribuição é antigo (v{found[0]}.{found[1]}); "
-            f"o Drivux precisa da v{need} ou mais nova. Instale a versão oficial:\n\n{OFFICIAL_INSTALL}"
+            f"This distribution's rclone is too old (v{found[0]}.{found[1]}); "
+            f"Drivux needs v{need} or newer. Install the official version:\n\n{OFFICIAL_INSTALL}"
         )
     return issues
 
@@ -76,7 +76,7 @@ def _run(args: list[str], timeout: float | None = None) -> str:
     proc = subprocess.run(["rclone", *args], capture_output=True, text=True, timeout=timeout)
     if proc.returncode != 0:
         lines = [line for line in proc.stderr.splitlines() if "client_id" not in line]
-        raise RcloneError("\n".join(lines).strip() or f"rclone {args[0]} falhou")
+        raise RcloneError("\n".join(lines).strip() or f"rclone {args[0]} failed")
     return proc.stdout
 
 
@@ -85,7 +85,7 @@ def has_remote(name: str = REMOTE) -> bool:
 
 
 def create_remote(name: str = REMOTE, client_id: str = "", client_secret: str = "") -> None:
-    """Abre o navegador para o login no Google e espera a autorização."""
+    """Open the browser for Google sign-in and wait for authorization."""
     args = ["config", "create", name, "drive", "scope=drive"]
     if client_id:
         args += [f"client_id={client_id}", f"client_secret={client_secret}"]
@@ -97,11 +97,11 @@ def delete_remote(name: str = REMOTE) -> None:
 
 
 def about(name: str = REMOTE) -> dict:
-    """Espaço da conta: total, used, free, trashed, other (em bytes)."""
+    """Account storage: total, used, free, trashed, other (in bytes)."""
     return json.loads(_run(["about", f"{name}:", "--json"], timeout=60))
 
 
 def rc(socket: Path, command: str, **params) -> dict:
-    """Chama o controle remoto do rclone mount pelo socket local."""
+    """Call the rclone mount remote control over the local socket."""
     args = ["rc", "--unix-socket", str(socket), command, *(f"{k}={v}" for k, v in params.items())]
     return json.loads(_run(args, timeout=10) or "{}")

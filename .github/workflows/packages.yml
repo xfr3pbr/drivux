@@ -1,0 +1,162 @@
+name: Packages
+
+# On every push: tests + packages + test installs on several distros.
+# On a vX.Y.Z tag: also publishes the packages on the Releases page.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  NFPM_VERSION: "2.47.0"
+
+jobs:
+  packages:
+    name: Tests and packages
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-gi gir1.2-gtk-4.0 gir1.2-adw-1
+
+      - name: Tests
+        run: make test
+
+      - name: Version
+        run: |
+          APP_VERSION=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' src/drivux/__init__.py)
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            if [ "${GITHUB_REF_NAME#v}" != "$APP_VERSION" ]; then
+              echo "::error::Tag $GITHUB_REF_NAME does not match __version__ $APP_VERSION"
+              exit 1
+            fi
+            echo "VERSION=$APP_VERSION" >> "$GITHUB_ENV"
+          else
+            echo "VERSION=$APP_VERSION-dev.$GITHUB_RUN_NUMBER" >> "$GITHUB_ENV"
+          fi
+
+      - name: Stage files
+        run: make install DESTDIR=build/root PREFIX=/usr
+
+      - name: Install nFPM
+        run: |
+          base="https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}"
+          file="nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz"
+          curl -fsSLO "$base/$file"
+          curl -fsSLO "$base/checksums.txt"
+          grep " $file\$" checksums.txt | sha256sum -c -
+          tar -xzf "$file" nfpm
+
+      - name: Build .deb and .rpm
+        run: |
+          mkdir -p dist
+          ./nfpm pkg --config packaging/nfpm.yaml --packager deb --target dist/
+          ./nfpm pkg --config packaging/nfpm.yaml --packager rpm --target dist/
+          ls -l dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages
+          path: dist/
+
+  test-deb:
+    name: Install (${{ matrix.image }})
+    needs: packages
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["ubuntu:24.04", "debian:13"]
+    container: ${{ matrix.image }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: packages
+          path: dist
+      - name: Install and run
+        run: |
+          apt-get update
+          apt-get install -y ./dist/*.deb
+          drivux --help
+          drivux status || true
+          PYTHONPATH=/usr/share/drivux python3 -c "import drivux.app"
+
+  test-rpm:
+    name: Install (${{ matrix.image }})
+    needs: packages
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["fedora:42"]
+    container: ${{ matrix.image }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: packages
+          path: dist
+      - name: Install and run
+        run: |
+          dnf install -y ./dist/*.rpm
+          drivux --help
+          drivux status || true
+          PYTHONPATH=/usr/share/drivux python3 -c "import drivux.app"
+
+  test-arch:
+    name: Install (Arch, PKGBUILD)
+    runs-on: ubuntu-24.04
+    container: archlinux:latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build with makepkg and install
+        run: |
+          pacman -Syu --noconfirm --needed base-devel python python-gobject gtk4 libadwaita rclone fuse3
+          useradd -m builder
+          mkdir /tmp/pkg
+          pkgver=$(sed -n 's/^pkgver=//p' packaging/arch/PKGBUILD)
+          tar --exclude=.git --transform "s|^\.|drivux-$pkgver|" -czf "/tmp/pkg/drivux-$pkgver.tar.gz" .
+          sed "s|^source=.*|source=(\"drivux-$pkgver.tar.gz\")|" packaging/arch/PKGBUILD > /tmp/pkg/PKGBUILD
+          chown -R builder /tmp/pkg
+          su builder -c "cd /tmp/pkg && makepkg --noconfirm"
+          pacman -U --noconfirm /tmp/pkg/drivux-*.pkg.tar.zst
+          drivux --help
+          drivux status || true
+          mkdir -p dist-arch && cp /tmp/pkg/drivux-*.pkg.tar.zst dist-arch/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arch-package
+          path: dist-arch/
+
+  publish:
+    name: Publish on the Releases page
+    if: github.ref_type == 'tag'
+    needs: [test-deb, test-rpm, test-arch]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: packages
+          path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: arch-package
+          path: dist
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Drivux $GITHUB_REF_NAME" \
+            --generate-notes

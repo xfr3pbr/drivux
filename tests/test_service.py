@@ -16,9 +16,14 @@ class RenderUnitTest(unittest.TestCase):
         self.assertRegex(unit, r'ExecStop="/\S*fusermount3" -uz "/home/u/Google Drive"')
 
     def test_notify_unit_runs_drivux_notify(self):
-        unit = service.render_notify_unit("/usr/bin/python3")
+        unit = service.render_notify_unit(python="/usr/bin/python3")
         self.assertIn('ExecStart="/usr/bin/python3" -m drivux notify', unit)
         self.assertIn('Environment="PYTHONPATH=', unit)
+
+    def test_installed_notify_unit_uses_launcher(self):
+        unit = service.render_notify_unit(drivux_bin="/usr/bin/drivux")
+        self.assertIn('ExecStart="/usr/bin/drivux" notify', unit)
+        self.assertNotIn("PYTHONPATH", unit)
 
     def test_percent_is_escaped_for_systemd(self):
         cfg = config.Config(remote="drivux", folder=Path("/home/u/100%"))
@@ -32,11 +37,11 @@ class CheckFolderTest(unittest.TestCase):
 
     def test_missing_folder_is_accepted(self):
         with tempfile.TemporaryDirectory() as tmp:
-            service.check_folder(Path(tmp) / "nova")
+            service.check_folder(Path(tmp) / "new")
 
     def test_non_empty_folder_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
-            Path(tmp, "arquivo.txt").write_text("x")
+            Path(tmp, "file.txt").write_text("x")
             with self.assertRaises(ValueError):
                 service.check_folder(Path(tmp))
 

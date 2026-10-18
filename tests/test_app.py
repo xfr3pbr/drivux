@@ -7,8 +7,8 @@ class FormatSizeTest(unittest.TestCase):
     def test_uses_base_1024_like_google(self):
         self.assertEqual(format_size(100 * 1024**3), "100 GB")
 
-    def test_uses_comma_as_decimal_separator(self):
-        self.assertEqual(format_size(int(5.765 * 1024**3)), "5,8 GB")
+    def test_one_decimal_place(self):
+        self.assertEqual(format_size(int(5.765 * 1024**3)), "5.8 GB")
 
     def test_small_sizes(self):
         self.assertEqual(format_size(512), "512 bytes")

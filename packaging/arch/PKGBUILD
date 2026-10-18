@@ -1,0 +1,21 @@
+# Maintainer: xfr3p <52558769+xfr3pbr@users.noreply.github.com>
+pkgname=drivux
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="On-demand Google Drive for Linux with a simple interface (rclone + GTK4)"
+arch=('any')
+url="https://github.com/xfr3pbr/drivux"
+license=('GPL-3.0-or-later')
+depends=('python' 'python-gobject' 'gtk4' 'libadwaita' 'rclone' 'fuse3' 'systemd')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+check() {
+  cd "$pkgname-$pkgver"
+  make test
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+  make DESTDIR="$pkgdir" PREFIX=/usr install
+}

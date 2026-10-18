@@ -1,0 +1,41 @@
+# Builds .deb (Debian/Ubuntu/Mint) and .rpm (Fedora) from build/root,
+# staged beforehand with: make install DESTDIR=build/root PREFIX=/usr
+name: drivux
+arch: all
+platform: linux
+version: ${VERSION}
+section: utils
+priority: optional
+maintainer: xfr3p <52558769+xfr3pbr@users.noreply.github.com>
+vendor: xfr3p
+homepage: https://github.com/xfr3pbr/drivux
+license: GPL-3.0-or-later
+description: |-
+  On-demand Google Drive for Linux, with a simple interface.
+  Shows all your Drive files in a folder; each file is only downloaded
+  when you open it. Powered by rclone.
+
+contents:
+  - src: ./build/root/usr/
+    dst: /usr/
+    type: tree
+
+overrides:
+  deb:
+    depends:
+      - rclone
+      - fuse3
+      - python3 (>= 3.11)
+      - python3-gi
+      - gir1.2-gtk-4.0
+      - gir1.2-adw-1
+      - systemd
+  rpm:
+    depends:
+      - rclone
+      - fuse3
+      - python3 >= 3.11
+      - python3-gobject
+      - gtk4
+      - libadwaita
+      - systemd

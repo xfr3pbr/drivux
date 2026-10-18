@@ -1,4 +1,4 @@
-"""Configuração do Drivux e caminhos padrão (XDG)."""
+"""Drivux configuration and default (XDG) paths."""
 
 import json
 import os

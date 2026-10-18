@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "drivux"
 version = "0.1.0"
-description = "Google Drive sob demanda para Linux, com interface simples, usando rclone."
+description = "On-demand Google Drive for Linux with a simple interface, powered by rclone."
 readme = "README.md"
 license = "GPL-3.0-or-later"
 requires-python = ">=3.11"

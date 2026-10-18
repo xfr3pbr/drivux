@@ -1,0 +1,5 @@
+#!/bin/sh
+# Launcher for Drivux installed as a package.
+export DRIVUX_BIN="$0"
+export PYTHONPATH="@LIBDIR@${PYTHONPATH:+:$PYTHONPATH}"
+exec @PYTHON@ -m drivux "$@"

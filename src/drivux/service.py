@@ -1,4 +1,4 @@
-"""Serviço systemd do usuário que monta o Google Drive sob demanda."""
+"""systemd user services that mount Google Drive on demand."""
 
 import os
 import shutil
@@ -28,12 +28,12 @@ def cache_dir() -> Path:
 
 
 def _quote(value: Path | str) -> str:
-    """Valor entre aspas e com % escapado, como o systemd espera."""
+    """Quote a value and escape % the way systemd expects."""
     return '"' + str(value).replace("%", "%%") + '"'
 
 
 def _which(name: str) -> str:
-    """Caminho absoluto de um programa (varia entre distribuições)."""
+    """Absolute path of a program (it varies between distributions)."""
     return shutil.which(name) or f"/usr/bin/{name}"
 
 
@@ -43,7 +43,7 @@ def render_unit(cfg: Config) -> str:
     log = _quote(cache_dir() / "drivux.log")
     rclone_bin = _quote(_which("rclone"))
     return f"""[Unit]
-Description=Drivux: Google Drive sob demanda em {cfg.folder}
+Description=Drivux: on-demand Google Drive at {cfg.folder}
 After=network-online.target
 Wants=network-online.target
 
@@ -64,7 +64,7 @@ ExecStart={rclone_bin} mount {cfg.remote}: {folder} \\
   --cache-dir {cache} \\
   --rc --rc-addr unix://%t/{SOCKET_NAME} --rc-no-auth \\
   --log-file {log} --log-level NOTICE
-# Carrega a árvore inteira de pastas de uma vez (só nomes, não baixa arquivos).
+# Load the whole folder tree at once (names only, no file downloads).
 ExecStartPost=-{rclone_bin} rc --unix-socket %t/{SOCKET_NAME} vfs/refresh recursive=true _async=true
 ExecStop={_quote(_which("fusermount3"))} -uz {folder}
 Restart=on-failure
@@ -75,17 +75,25 @@ WantedBy=default.target
 """
 
 
-def render_notify_unit(python: str = sys.executable) -> str:
-    # PYTHONPATH aponta para onde o pacote está, para funcionar também
-    # rodando direto do código-fonte.
-    package_root = Path(__file__).resolve().parent.parent
+def render_notify_unit(drivux_bin: str | None = None, python: str = sys.executable) -> str:
+    # When installed as a package, the /usr/bin/drivux launcher exports
+    # DRIVUX_BIN and the service calls it (survives distro Python upgrades).
+    # When running from source, call Python with PYTHONPATH set to the package.
+    drivux_bin = drivux_bin or os.environ.get("DRIVUX_BIN")
+    if drivux_bin:
+        exec_lines = f"ExecStart={_quote(drivux_bin)} notify"
+    else:
+        package_root = Path(__file__).resolve().parent.parent
+        exec_lines = (
+            f"Environment={_quote(f'PYTHONPATH={package_root}')}\n"
+            f"ExecStart={_quote(python)} -m drivux notify"
+        )
     return f"""[Unit]
-Description=Drivux: notificações do que está sincronizando
+Description=Drivux: notifications about what is syncing
 After={UNIT_NAME}
 
 [Service]
-Environment={_quote(f"PYTHONPATH={package_root}")}
-ExecStart={_quote(python)} -m drivux notify
+{exec_lines}
 Restart=on-failure
 RestartSec=10
 
@@ -95,11 +103,11 @@ WantedBy=default.target
 
 
 def check_folder(folder: Path) -> None:
-    """Garante que a pasta pode receber o Drive (vazia e sem nada montado)."""
+    """Make sure the folder can host the Drive (empty, nothing mounted on it)."""
     if os.path.ismount(folder):
-        raise ValueError(f"{folder} já está em uso por outra montagem. Escolha outra pasta.")
+        raise ValueError(f"{folder} is already used by another mount. Choose another folder.")
     if folder.exists() and any(folder.iterdir()):
-        raise ValueError(f"{folder} precisa estar vazia. Escolha outra pasta.")
+        raise ValueError(f"{folder} must be empty. Choose another folder.")
 
 
 def _systemctl(*args: str, check: bool = True) -> subprocess.CompletedProcess:
@@ -170,8 +178,8 @@ def status() -> Status:
         st.cache_used = disk.get("bytesUsed", 0)
     except rclone.RcloneError:
         pass
-    # O carregamento da árvore é o primeiro job assíncrono (id 1). Depois de
-    # terminar ele expira e o rc responde "job not found".
+    # Loading the tree is the first async job (id 1). Once finished it
+    # expires and rc answers "job not found".
     try:
         st.loading_folders = not rclone.rc(sock, "job/status", jobid=1).get("finished", True)
     except rclone.RcloneError:

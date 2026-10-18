@@ -27,7 +27,7 @@ class NotifierTest(unittest.TestCase):
         self.notifier.update(Activity(uploads=["a.txt"]))
         self.notifier.update(Activity())
         titles = [n["title"] for n in self.send.sent]
-        self.assertEqual(titles, ["Sincronizando 1 arquivo", "Tudo sincronizado"])
+        self.assertEqual(titles, ["Syncing 1 file", "Everything is synced"])
         self.assertTrue(self.send.sent[0]["persistent"])
         self.assertEqual(self.send.sent[1]["replaces"], 42)
 
@@ -39,7 +39,7 @@ class NotifierTest(unittest.TestCase):
 
     def test_same_content_is_not_resent(self):
         for _ in range(5):
-            self.notifier.update(Activity(downloads=["foto.jpg"]))
+            self.notifier.update(Activity(downloads=["photo.jpg"]))
         self.assertEqual(len(self.send.sent), 1)
 
     def test_new_errors_notify_but_old_ones_do_not(self):
@@ -55,10 +55,10 @@ class NotifierTest(unittest.TestCase):
 
 class DescribeTest(unittest.TestCase):
     def test_lists_direction_and_truncates(self):
-        title, body = describe(Activity(uploads=["pasta/a.txt"], downloads=["b", "c", "d", "e"]))
-        self.assertEqual(title, "Sincronizando 5 arquivos")
+        title, body = describe(Activity(uploads=["folder/a.txt"], downloads=["b", "c", "d", "e"]))
+        self.assertEqual(title, "Syncing 5 files")
         self.assertTrue(body.startswith("↑ a.txt\n↓ b"))
-        self.assertTrue(body.endswith("e mais 1"))
+        self.assertTrue(body.endswith("and 1 more"))
 
 
 if __name__ == "__main__":
