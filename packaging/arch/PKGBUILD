@@ -7,6 +7,8 @@ arch=('any')
 url="https://github.com/xfr3pbr/drivux"
 license=('GPL-3.0-or-later')
 depends=('python' 'python-gobject' 'gtk4' 'libadwaita' 'rclone' 'fuse3' 'systemd')
+optdepends=('nautilus-python: "Keep offline" in the Nautilus right-click menu'
+            'python-pyfuse3: instant folders (drivux fast on)')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('SKIP')
 

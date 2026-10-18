@@ -18,7 +18,11 @@ and the user experience.
   cache usage, pause, start with the computer and disconnect.
 - Desktop notifications showing what is still syncing (↑ uploading, ↓ downloading),
   updated in place, plus a separate alert when something fails.
-- Command line: `drivux setup | status | start | stop | remove | notify`.
+- **Keep offline** in the Nautilus right-click menu (needs `nautilus-python`): downloads the file or
+  folder now and keeps it in the cache, even when you do not open it for weeks.
+- **Instant folders** (optional, `drivux fast on`): the list of your files is kept on disk, so the
+  folder is complete the moment the computer starts, even offline. See below.
+- Command line: `drivux setup | status | start | stop | remove | notify | offline | fast`.
 
 ## Installation
 
@@ -77,6 +81,27 @@ sudo apt install rclone fuse3 python3-gi gir1.2-gtk-4.0 gir1.2-adw-1            
 sudo zypper install rclone fuse3 python3-gobject typelib-1_0-Gtk-4_0 typelib-1_0-Adw-1  # openSUSE
 ```
 
+## Instant folders
+
+By default rclone forgets the list of your files whenever it restarts, so for a few minutes after
+boot some folders are slow to open. `drivux fast on` fixes that, the way Google Drive for desktop
+does on Windows:
+
+```
+~/GoogleDrive   (Drivux: names come from a database on disk)
+      |  open, read, write, rename, delete
+      v
+rclone mount (hidden)  ->  Google Drive
+```
+
+- Folders and file info are answered from `~/.cache/drivux/index.sqlite3`: ~0.2 s after a restart
+  with 14 thousand files, with or without internet.
+- Everything else goes to rclone, which keeps doing the cache and the uploads.
+- Drivux reads the whole Drive tree in the background every 5 minutes to keep the list current.
+  **Changes made on drive.google.com can take up to 5 minutes to show up** (about 10 s without it).
+- The first time it reads the tree before showing the folder (about a minute).
+- Needs `python-pyfuse3` (Arch) or `python3-pyfuse3` (Debian, Fedora). `drivux fast off` goes back.
+
 ## Running from source
 
 ```bash
@@ -99,6 +124,8 @@ make test
 | Drivux settings | `~/.config/drivux/config.json` |
 | Service that mounts the folder | `~/.config/systemd/user/drivux.service` |
 | Notification service | `~/.config/systemd/user/drivux-notify.service` |
+| Instant folders: service and the file list | `~/.config/systemd/user/drivux-front.service`, `~/.cache/drivux/index.sqlite3` |
+| Files kept offline, and the daily timer that refreshes them | `~/.config/drivux/offline.json`, `~/.config/systemd/user/drivux-offline.{service,timer}` |
 | Cache of opened files, and log | `~/.cache/drivux/` |
 | rclone control socket (only your user can access it) | `$XDG_RUNTIME_DIR/drivux.sock` |
 
@@ -111,7 +138,9 @@ Disconnecting removes the services, the cache and the account access.
 ## Known limitations
 
 - Native Google documents (Docs, Sheets, Forms) do not show up in the folder.
-- Offline, only files already in the cache can be opened.
+- Offline, only files already in the cache can be opened. Use **Keep offline** for the ones you need:
+  they are read again every day so the cache does not expire them, but everything kept offline
+  still counts toward the 10 GB cache limit (`drivux offline list` shows what is kept).
 - rclone's default Google Drive access (shared client ID) is being retired in 2026.
   To avoid depending on it, create your own client ID in Google Cloud and enter it
   under **Advanced** on the setup screen (or `drivux setup --client-id ... --client-secret ...`).
@@ -120,9 +149,10 @@ Disconnecting removes the services, the cache and the account access.
 
 - [ ] Wizard to create your own Google Cloud client ID
 - [ ] Status icons on files (cloud / available offline) in Nautilus
-- [ ] "Keep offline" from the right-click menu
+- [x] "Keep offline" from the right-click menu (Nautilus)
 - [ ] Tray icon with progress and error alerts
-- [ ] Persist the folder list to disk so it is instant right after boot
+- [x] Persist the folder list to disk so it is instant right after boot (`drivux fast on`)
+- [ ] Follow the Drive change feed (about 10 s) instead of rescanning every 5 minutes
 - [x] .deb, .rpm and Arch packages, install-tested in CI on Ubuntu, Debian, Fedora and Arch
 - [ ] Publish to the AUR (new AUR account registration is temporarily closed)
 - [ ] Support for systems without systemd

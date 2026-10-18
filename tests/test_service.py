@@ -30,6 +30,39 @@ class RenderUnitTest(unittest.TestCase):
         self.assertIn('"/home/u/100%%"', service.render_unit(cfg))
 
 
+class FastListingTest(unittest.TestCase):
+    def test_default_mounts_rclone_on_the_folder(self):
+        cfg = config.Config(remote="drivux", folder=Path("/home/u/GoogleDrive"))
+        self.assertEqual(service.mount_folder(cfg), Path("/home/u/GoogleDrive"))
+
+    def test_fast_listing_hides_rclone_behind_the_folder(self):
+        cfg = config.Config(remote="drivux", folder=Path("/home/u/GoogleDrive"), fast_listing=True)
+        hidden = service.mount_folder(cfg)
+        self.assertNotEqual(hidden, cfg.folder)
+        unit = service.render_unit(cfg)
+        self.assertIn(f'mount drivux: "{hidden}"', unit)
+        self.assertNotIn('"/home/u/GoogleDrive"', unit)
+
+    def test_front_unit_needs_the_rclone_mount_and_unmounts_on_stop(self):
+        cfg = config.Config(remote="drivux", folder=Path("/home/u/GoogleDrive"), fast_listing=True)
+        unit = service.render_front_unit(cfg, drivux_bin="/usr/bin/drivux")
+        self.assertIn("Requires=drivux.service", unit)
+        self.assertNotRegex(unit, r"(?m)^After=")  # must not wait for rclone to be ready
+        self.assertIn('ExecStart="/usr/bin/drivux" front', unit)
+        self.assertRegex(unit, r'ExecStopPost=-"/\S*fusermount3" -uz "/home/u/GoogleDrive"')
+
+    def test_old_config_without_the_field_still_loads(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.environ["XDG_CONFIG_HOME"] = tmp
+            try:
+                path = config.config_path()
+                path.parent.mkdir(parents=True)
+                path.write_text('{"remote": "drivux", "folder": "/home/u/GoogleDrive", "cache_max_size": "10G", "cache_max_age": "720h"}')
+                self.assertFalse(config.load().fast_listing)
+            finally:
+                del os.environ["XDG_CONFIG_HOME"]
+
+
 class CheckFolderTest(unittest.TestCase):
     def test_empty_folder_is_accepted(self):
         with tempfile.TemporaryDirectory() as tmp:

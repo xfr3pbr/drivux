@@ -105,3 +105,8 @@ def rc(socket: Path, command: str, **params) -> dict:
     """Call the rclone mount remote control over the local socket."""
     args = ["rc", "--unix-socket", str(socket), command, *(f"{k}={v}" for k, v in params.items())]
     return json.loads(_run(args, timeout=10) or "{}")
+
+
+def list_tree(name: str = REMOTE) -> list[dict]:
+    """Every file and folder of the Drive with its ID, size and date (Docs and Sheets excluded)."""
+    return json.loads(_run(["lsjson", "-R", "--fast-list", "--drive-skip-gdocs", f"{name}:"], timeout=1800))

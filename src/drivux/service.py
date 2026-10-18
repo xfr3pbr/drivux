@@ -7,11 +7,14 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import rclone
+from . import config, offline, rclone
 from .config import Config, cache_home, config_home, runtime_dir
 
 UNIT_NAME = "drivux.service"
 NOTIFY_UNIT_NAME = "drivux-notify.service"
+FRONT_UNIT_NAME = "drivux-front.service"
+OFFLINE_UNIT_NAME = "drivux-offline.service"
+OFFLINE_TIMER_NAME = "drivux-offline.timer"
 SOCKET_NAME = "drivux.sock"
 
 
@@ -37,13 +40,18 @@ def _which(name: str) -> str:
     return shutil.which(name) or f"/usr/bin/{name}"
 
 
+def mount_folder(cfg: Config) -> Path:
+    """Where rclone mounts the Drive. With fast listing it is hidden behind the folder the user sees."""
+    return runtime_dir() / "drivux" / "raw" if cfg.fast_listing else cfg.folder
+
+
 def render_unit(cfg: Config) -> str:
-    folder = _quote(cfg.folder)
+    folder = _quote(mount_folder(cfg))
     cache = _quote(cache_dir())
     log = _quote(cache_dir() / "drivux.log")
     rclone_bin = _quote(_which("rclone"))
     return f"""[Unit]
-Description=Drivux: on-demand Google Drive at {cfg.folder}
+Description=Drivux: on-demand Google Drive at {mount_folder(cfg)}
 After=network-online.target
 Wants=network-online.target
 
@@ -75,19 +83,22 @@ WantedBy=default.target
 """
 
 
-def render_notify_unit(drivux_bin: str | None = None, python: str = sys.executable) -> str:
+def _drivux_command(subcommand: str, drivux_bin: str | None, python: str) -> str:
     # When installed as a package, the /usr/bin/drivux launcher exports
     # DRIVUX_BIN and the service calls it (survives distro Python upgrades).
     # When running from source, call Python with PYTHONPATH set to the package.
     drivux_bin = drivux_bin or os.environ.get("DRIVUX_BIN")
     if drivux_bin:
-        exec_lines = f"ExecStart={_quote(drivux_bin)} notify"
-    else:
-        package_root = Path(__file__).resolve().parent.parent
-        exec_lines = (
-            f"Environment={_quote(f'PYTHONPATH={package_root}')}\n"
-            f"ExecStart={_quote(python)} -m drivux notify"
-        )
+        return f"ExecStart={_quote(drivux_bin)} {subcommand}"
+    package_root = Path(__file__).resolve().parent.parent
+    return (
+        f"Environment={_quote(f'PYTHONPATH={package_root}')}\n"
+        f"ExecStart={_quote(python)} -m drivux {subcommand}"
+    )
+
+
+def render_notify_unit(drivux_bin: str | None = None, python: str = sys.executable) -> str:
+    exec_lines = _drivux_command("notify", drivux_bin, python)
     return f"""[Unit]
 Description=Drivux: notifications about what is syncing
 After={UNIT_NAME}
@@ -99,6 +110,52 @@ RestartSec=10
 
 [Install]
 WantedBy=default.target
+"""
+
+
+def render_front_unit(cfg: Config, drivux_bin: str | None = None, python: str = sys.executable) -> str:
+    folder = _quote(cfg.folder)
+    exec_lines = _drivux_command("front", drivux_bin, python)
+    return f"""[Unit]
+Description=Drivux: instant listing of the Drive at {cfg.folder}
+# No After=: the list does not need rclone, so the folder is ready while rclone is still starting.
+Requires={UNIT_NAME}
+
+[Service]
+ExecStartPre={_quote(_which("mkdir"))} -p {folder}
+{exec_lines}
+ExecStopPost=-{_quote(_which("fusermount3"))} -uz {folder}
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+"""
+
+
+def render_offline_unit(drivux_bin: str | None = None, python: str = sys.executable) -> str:
+    exec_lines = _drivux_command("offline sync", drivux_bin, python)
+    return f"""[Unit]
+Description=Drivux: keep the offline files in the cache
+After={UNIT_NAME}
+
+[Service]
+Type=oneshot
+{exec_lines}
+"""
+
+
+def render_offline_timer() -> str:
+    return f"""[Unit]
+Description=Drivux: refresh the offline files every day
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
 """
 
 
@@ -119,28 +176,59 @@ def install(cfg: Config) -> None:
     unit.parent.mkdir(parents=True, exist_ok=True)
     unit.write_text(render_unit(cfg))
     unit_path(NOTIFY_UNIT_NAME).write_text(render_notify_unit())
+    units = [UNIT_NAME, NOTIFY_UNIT_NAME]
+    if cfg.fast_listing:
+        unit_path(FRONT_UNIT_NAME).write_text(render_front_unit(cfg))
+        units.append(FRONT_UNIT_NAME)
+    else:
+        unit_path(FRONT_UNIT_NAME).unlink(missing_ok=True)
     _systemctl("daemon-reload")
-    _systemctl("enable", "--now", UNIT_NAME, NOTIFY_UNIT_NAME)
+    _systemctl("enable", "--now", *units)
+
+
+def set_fast_listing(cfg: Config, enabled: bool) -> Config:
+    """Switch the folder between rclone listing and the on-disk index. Restarts the mount."""
+    _systemctl("disable", "--now", FRONT_UNIT_NAME, check=False)
+    _systemctl("stop", UNIT_NAME, check=False)
+    cfg.fast_listing = enabled
+    check_folder(cfg.folder)  # must be empty and unmounted before it is used again
+    config.save(cfg)
+    install(cfg)
+    return cfg
+
+
+def ensure_offline_timer() -> None:
+    """Install the daily refresh of the offline files (first time something is kept offline)."""
+    unit_path(OFFLINE_UNIT_NAME).write_text(render_offline_unit())
+    unit_path(OFFLINE_TIMER_NAME).write_text(render_offline_timer())
+    _systemctl("daemon-reload")
+    _systemctl("enable", "--now", OFFLINE_TIMER_NAME)
 
 
 def uninstall() -> None:
-    _systemctl("disable", "--now", UNIT_NAME, NOTIFY_UNIT_NAME, check=False)
-    unit_path().unlink(missing_ok=True)
-    unit_path(NOTIFY_UNIT_NAME).unlink(missing_ok=True)
+    _systemctl("disable", "--now", FRONT_UNIT_NAME, UNIT_NAME, NOTIFY_UNIT_NAME, OFFLINE_TIMER_NAME, check=False)
+    for name in (FRONT_UNIT_NAME, UNIT_NAME, NOTIFY_UNIT_NAME, OFFLINE_UNIT_NAME, OFFLINE_TIMER_NAME):
+        unit_path(name).unlink(missing_ok=True)
+    offline.list_path().unlink(missing_ok=True)
     _systemctl("daemon-reload")
     shutil.rmtree(cache_dir(), ignore_errors=True)
 
 
+def _folder_units() -> list[str]:
+    cfg = config.load()
+    return [UNIT_NAME, FRONT_UNIT_NAME] if cfg and cfg.fast_listing else [UNIT_NAME]
+
+
 def start() -> None:
-    _systemctl("start", UNIT_NAME)
+    _systemctl("start", *_folder_units())
 
 
 def stop() -> None:
-    _systemctl("stop", UNIT_NAME)
+    _systemctl("stop", *reversed(_folder_units()))
 
 
 def set_enabled(enabled: bool) -> None:
-    _systemctl("enable" if enabled else "disable", UNIT_NAME)
+    _systemctl("enable" if enabled else "disable", *_folder_units())
 
 
 def set_notifications(enabled: bool) -> None:
@@ -164,11 +252,19 @@ class Status:
     uploading: int = 0
     queued: int = 0
     cache_used: int = 0
+    fast_listing: bool = False
 
 
 def status() -> Status:
-    st = Status(active=is_active(), enabled=is_enabled(), notifications=is_enabled(NOTIFY_UNIT_NAME))
-    if not st.active:
+    cfg = config.load()
+    fast = bool(cfg and cfg.fast_listing)
+    st = Status(
+        active=is_active() and (not fast or is_active(FRONT_UNIT_NAME)),
+        enabled=is_enabled(),
+        notifications=is_enabled(NOTIFY_UNIT_NAME),
+        fast_listing=fast,
+    )
+    if not is_active():
         return st
     sock = socket_path()
     try:

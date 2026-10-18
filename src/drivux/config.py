@@ -31,6 +31,7 @@ class Config:
     folder: Path
     cache_max_size: str = "10G"
     cache_max_age: str = "720h"
+    fast_listing: bool = False  # folder listing from the on-disk index (see front.py)
 
 
 def load() -> Config | None:

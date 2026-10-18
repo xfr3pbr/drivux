@@ -30,6 +30,9 @@ overrides:
       - gir1.2-gtk-4.0
       - gir1.2-adw-1
       - systemd
+    recommends:
+      - python3-nautilus
+      - python3-pyfuse3
   rpm:
     depends:
       - rclone
@@ -39,3 +42,6 @@ overrides:
       - gtk4
       - libadwaita
       - systemd
+    recommends:
+      - nautilus-python
+      - python3-pyfuse3
